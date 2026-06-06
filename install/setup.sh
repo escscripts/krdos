@@ -785,6 +785,52 @@ ok "Power command symlinks ensured"
 # =============================================================================
 step "10/10" "Install krdos-update self-update tool"
 
+# ── Create /etc/krdos/update.conf (token store) ───────────────────────────────
+# This file is the single source of truth for GITHUB_REPO and GITHUB_TOKEN.
+# chmod 600 / root-only: token is never committed to git or visible to other users.
+# Never overwrite an existing file — the user may have already set their token.
+UPDATE_CONF="/etc/krdos/update.conf"
+mkdir -p /etc/krdos
+
+if [[ ! -f "$UPDATE_CONF" ]]; then
+  cat > "$UPDATE_CONF" <<'UPDATECONF'
+# /etc/krdos/update.conf
+# ─────────────────────────────────────────────────────────────────────────────
+# KrdOS self-update configuration
+# Edit this file as root.  chmod 600 is enforced below — never commit this file.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# GitHub repository in the form  owner/repo
+# Replace with your actual repository name.
+GITHUB_REPO=escscripts/krdos
+
+# Personal Access Token for PRIVATE repositories.
+# Leave blank (or remove the line) for public repos — no token needed.
+# Generate a token at: https://github.com/settings/tokens
+#   Required scopes: repo (for private repos) or public_repo (for public repos)
+# Example:
+#   GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+GITHUB_TOKEN=
+UPDATECONF
+  ok "Created $UPDATE_CONF (template with blank token)"
+else
+  ok "$UPDATE_CONF already exists — not overwritten (your token is safe)"
+fi
+
+# Lock down permissions: root read/write only, no other users
+chown root:root "$UPDATE_CONF"
+chmod 600 "$UPDATE_CONF"
+ok "Permissions: $UPDATE_CONF  (root:root 600)"
+
+# Warn if the token is still blank
+CONF_TOKEN=$(grep -m1 '^GITHUB_TOKEN=' "$UPDATE_CONF" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]')
+if [[ -z "$CONF_TOKEN" ]]; then
+  warn "GITHUB_TOKEN is not set in $UPDATE_CONF"
+  warn "  → For private repos, run:  sudo nano $UPDATE_CONF"
+  warn "    and add:  GITHUB_TOKEN=ghp_your_token_here"
+  warn "  → Public repos work without a token."
+fi
+
 # Install the update script — either from the USB/overlay or a bundled copy
 if [[ -f "$SCRIPT_DIR/krdos-update.sh" ]]; then
   cp "$SCRIPT_DIR/krdos-update.sh" /usr/local/bin/krdos-update

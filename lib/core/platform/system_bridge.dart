@@ -316,6 +316,16 @@ class SystemBridge {
 
   // - Software Updates -
 
+  /// Reads /etc/krdos/update.conf and returns {repo: String, has_token: bool}.
+  /// The actual token value is NEVER sent to Dart — only whether one is set.
+  static Future<Map<String, dynamic>> getUpdateConfig() async {
+    if (!_live) return {'repo': '', 'has_token': false};
+    try {
+      final r = await _ch.invokeMapMethod<String, dynamic>('update.get_config');
+      return r ?? {'repo': '', 'has_token': false};
+    } on PlatformException { return {'repo': '', 'has_token': false}; }
+  }
+
   /// Returns the locally installed version string from /opt/krdos/version.
   static Future<String> getOsVersion() async {
     if (!_live) return 'dev-build';

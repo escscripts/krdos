@@ -1475,20 +1475,69 @@ static void on_method_call(FlMethodChannel* /*channel*/,
     free(ver);
     resp = FL_METHOD_RESPONSE(fl_method_success_response_new(s));
 
+  // ── Update: read config (repo + whether a token exists) ──────────────────
+  // Token value is NEVER sent to Dart — only a boolean "has_token" is exposed.
+  } else if (strcmp(method, "update.get_config") == 0) {
+    char* conf_repo = shell_capture(
+      "grep -m1 '^GITHUB_REPO=' /etc/krdos/update.conf 2>/dev/null "
+      "| cut -d= -f2- | tr -d '[:space:]'");
+    char* conf_tok = shell_capture(
+      "grep -m1 '^GITHUB_TOKEN=' /etc/krdos/update.conf 2>/dev/null "
+      "| cut -d= -f2- | tr -d '[:space:]'");
+    if (!conf_repo) conf_repo = strdup("");
+    if (!conf_tok)  conf_tok  = strdup("");
+    bool has_token = strlen(conf_tok) > 0;
+    g_autoptr(FlValue) map = fl_value_new_map();
+    fl_value_set_string_take(map, "repo",      fl_value_new_string(conf_repo));
+    fl_value_set_string_take(map, "has_token", fl_value_new_bool(has_token));
+    free(conf_repo); free(conf_tok);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(map));
+
   // ── Update: hit GitHub API and return raw JSON ─────────────────────────────
+  // Reads token from /etc/krdos/update.conf; token never leaves C++.
   } else if (strcmp(method, "update.check") == 0) {
     const char* repo = "";
+    char conf_repo_buf[256] = "";
     if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
       FlValue* r = fl_value_lookup_string(args, "repo");
       if (r && fl_value_get_type(r) == FL_VALUE_TYPE_STRING)
         repo = fl_value_get_string(r);
     }
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd),
-      "curl -fsSL --max-time 10 "
-      "-H 'Accept: application/vnd.github+json' "
-      "https://api.github.com/repos/%s/releases/latest 2>/dev/null",
-      repo);
+    // Fall back to conf file if caller did not supply repo
+    if (strlen(repo) == 0) {
+      char* cr = shell_capture(
+        "grep -m1 '^GITHUB_REPO=' /etc/krdos/update.conf 2>/dev/null "
+        "| cut -d= -f2- | tr -d '[:space:]'");
+      if (cr && strlen(cr) > 0) {
+        strncpy(conf_repo_buf, cr, sizeof(conf_repo_buf) - 1);
+        repo = conf_repo_buf;
+      }
+      free(cr);
+    }
+    // Read token — only used here to build the curl header, never returned.
+    char* token = shell_capture(
+      "grep -m1 '^GITHUB_TOKEN=' /etc/krdos/update.conf 2>/dev/null "
+      "| cut -d= -f2- | tr -d '[:space:]'");
+    if (!token) token = strdup("");
+    char cmd[2048];
+    if (strlen(token) > 0) {
+      // GitHub PATs are [A-Za-z0-9_-] only — safe to embed directly.
+      snprintf(cmd, sizeof(cmd),
+        "curl -fsSL --max-time 10 "
+        "-H 'Accept: application/vnd.github+json' "
+        "-H 'X-GitHub-Api-Version: 2022-11-28' "
+        "-H 'Authorization: Bearer %s' "
+        "https://api.github.com/repos/%s/releases/latest 2>/dev/null",
+        token, repo);
+    } else {
+      snprintf(cmd, sizeof(cmd),
+        "curl -fsSL --max-time 10 "
+        "-H 'Accept: application/vnd.github+json' "
+        "-H 'X-GitHub-Api-Version: 2022-11-28' "
+        "https://api.github.com/repos/%s/releases/latest 2>/dev/null",
+        repo);
+    }
+    free(token);
     char* json = shell_capture(cmd);
     if (!json) json = strdup("{}");
     g_autoptr(FlValue) s = fl_value_new_string(json);

@@ -2,16 +2,18 @@
 # =============================================================================
 # krdos-update  —  KrdOS self-update via GitHub Releases
 # Installed to: /usr/local/bin/krdos-update
-# Usage:  krdos-update          # check + apply if newer version exists
-#         krdos-update --check  # only print status, don't install
-#         krdos-update --force  # install even if same version
+#
+# Usage:
+#   krdos-update            check + apply if a newer version exists
+#   krdos-update --check    print status only, never install
+#   krdos-update --force    install even if already on latest version
+#
+# Configuration (never edit this script — edit the conf file instead):
+#   /etc/krdos/update.conf     GITHUB_REPO and GITHUB_TOKEN live here
+#                              chmod 600, root-only — never committed to git
 # =============================================================================
 
-# ── CONFIGURE THIS ────────────────────────────────────────────────────────────
-GITHUB_REPO="escscripts/krdos"
-# Example:   GITHUB_REPO="meeru/krdos"
-# ─────────────────────────────────────────────────────────────────────────────
-
+CONFIG_FILE="/etc/krdos/update.conf"
 INSTALL_DIR="/opt/krdos"
 VERSION_FILE="$INSTALL_DIR/version"
 SERVICE_NAME="krdos-ui"
@@ -42,14 +44,55 @@ for arg in "$@"; do
   esac
 done
 
-# ── Sanity checks ─────────────────────────────────────────────────────────────
-if [[ "$GITHUB_REPO" == *"REPLACE_WITH"* ]]; then
-  die "Edit /usr/local/bin/krdos-update and set GITHUB_REPO to your GitHub repo (e.g. meeru/krdos)"
+# ── Load configuration from /etc/krdos/update.conf ───────────────────────────
+# The config file is the single source of truth for repo + token.
+# It is chmod 600 / root-only and is NEVER committed to git.
+GITHUB_REPO=""
+GITHUB_TOKEN=""
+
+if [[ -f "$CONFIG_FILE" ]]; then
+  # Parse key=value lines safely — no eval, no sourcing arbitrary code.
+  while IFS='=' read -r key value; do
+    # Skip blank lines and comments
+    [[ -z "$key" || "$key" == \#* ]] && continue
+    # Strip inline comments and surrounding whitespace
+    value="${value%%#*}"
+    value="${value#"${value%%[! ]*}"}"   # ltrim
+    value="${value%"${value##*[! ]}"}"   # rtrim
+    case "$key" in
+      GITHUB_REPO)  GITHUB_REPO="$value"  ;;
+      GITHUB_TOKEN) GITHUB_TOKEN="$value" ;;
+    esac
+  done < "$CONFIG_FILE"
+else
+  warn "Config file not found: $CONFIG_FILE"
+  warn "Create it with: sudo krdos-update-config"
+fi
+
+# Allow env-var overrides (useful for one-off manual runs without editing conf)
+# e.g.:  GITHUB_TOKEN=ghp_xxx krdos-update
+[[ -n "${KRDOS_GITHUB_REPO:-}"  ]] && GITHUB_REPO="$KRDOS_GITHUB_REPO"
+[[ -n "${KRDOS_GITHUB_TOKEN:-}" ]] && GITHUB_TOKEN="$KRDOS_GITHUB_TOKEN"
+
+# ── Validate config ───────────────────────────────────────────────────────────
+if [[ -z "$GITHUB_REPO" ]]; then
+  die "GITHUB_REPO is not set in $CONFIG_FILE\n  Edit the file and add: GITHUB_REPO=owner/repo"
 fi
 
 for cmd in curl tar sha256sum systemctl; do
   command -v "$cmd" &>/dev/null || die "Required command not found: $cmd"
 done
+
+# ── Build reusable auth header array for curl ─────────────────────────────────
+# This is the ONLY place the token is referenced after loading.
+# Every curl call uses ${CURL_AUTH[@]} to inject it — or nothing if no token.
+CURL_AUTH=()
+if [[ -n "$GITHUB_TOKEN" ]]; then
+  CURL_AUTH=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+  info "Auth         : token loaded from $CONFIG_FILE ✓"
+else
+  warn "No GITHUB_TOKEN in $CONFIG_FILE — will only work with public repos."
+fi
 
 echo
 echo -e "${BLD}╔═══════════════════════════════════════╗${RST}"
@@ -57,58 +100,76 @@ echo -e "${BLD}║       KrdOS Self-Update System        ║${RST}"
 echo -e "${BLD}╚═══════════════════════════════════════╝${RST}"
 echo
 
-# ── Read current version ──────────────────────────────────────────────────────
+# ── Read current installed version ───────────────────────────────────────────
 CURRENT_VERSION="none"
 if [[ -f "$VERSION_FILE" ]]; then
-  CURRENT_VERSION=$(cat "$VERSION_FILE" | tr -d '[:space:]')
+  CURRENT_VERSION=$(tr -d '[:space:]' < "$VERSION_FILE")
 fi
 info "Current version : ${BLD}${CURRENT_VERSION}${RST}"
+info "Repository      : ${GITHUB_REPO}"
 
 # ── Fetch latest release info from GitHub API ─────────────────────────────────
 info "Checking GitHub for latest release..."
 API_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
 
-RELEASE_JSON=$(curl -fsSL \
+RELEASE_JSON=$(curl -fsSL --max-time 15 \
+  "${CURL_AUTH[@]}" \
   -H "Accept: application/vnd.github+json" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
   "$API_URL" 2>/dev/null)
 
 if [[ -z "$RELEASE_JSON" ]]; then
-  die "Could not reach GitHub API. Check your internet connection."
+  die "Could not reach GitHub API at: $API_URL\n  Check internet connection and GITHUB_TOKEN."
+fi
+
+# Check for API error response
+API_MSG=$(echo "$RELEASE_JSON" | grep -oP '"message":\s*"\K[^"]+' | head -1)
+if [[ -n "$API_MSG" ]]; then
+  case "$API_MSG" in
+    "Not Found")
+      die "Repository or release not found: $GITHUB_REPO\n  Check GITHUB_REPO and that at least one release exists." ;;
+    "Bad credentials")
+      die "GitHub token rejected (Bad credentials).\n  Regenerate your token and update $CONFIG_FILE." ;;
+    *)
+      die "GitHub API error: $API_MSG" ;;
+  esac
 fi
 
 REMOTE_VERSION=$(echo "$RELEASE_JSON" | grep -oP '"name":\s*"\K[^"]+' | head -1)
-BUNDLE_URL=$(echo "$RELEASE_JSON" | grep -oP '"browser_download_url":\s*"\K[^"]+' \
+BUNDLE_URL=$(echo "$RELEASE_JSON" \
+  | grep -oP '"browser_download_url":\s*"\K[^"]+' \
   | grep "${ASSET_NAME}$" | head -1)
-CHECKSUM_URL=$(echo "$RELEASE_JSON" | grep -oP '"browser_download_url":\s*"\K[^"]+' \
+CHECKSUM_URL=$(echo "$RELEASE_JSON" \
+  | grep -oP '"browser_download_url":\s*"\K[^"]+' \
   | grep "${CHECKSUM_NAME}$" | head -1)
-SETUP_URL=$(echo "$RELEASE_JSON" | grep -oP '"browser_download_url":\s*"\K[^"]+' \
+SETUP_URL=$(echo "$RELEASE_JSON" \
+  | grep -oP '"browser_download_url":\s*"\K[^"]+' \
   | grep "setup\.sh$" | head -1)
 
 if [[ -z "$BUNDLE_URL" ]]; then
-  die "No '${ASSET_NAME}' found in the latest release. Has a build been published yet?"
+  die "No '${ASSET_NAME}' asset found in the latest release.\n  Has a GitHub Actions build been published yet?"
 fi
 
-info "Latest release  : ${BLD}${REMOTE_VERSION}${RST}"
-info "Bundle URL      : $BUNDLE_URL"
+info "Latest version  : ${BLD}${REMOTE_VERSION}${RST}"
 
 # ── Version comparison ────────────────────────────────────────────────────────
 if [[ "$CURRENT_VERSION" == "$REMOTE_VERSION" && "$FORCE" -eq 0 ]]; then
-  ok "Already up to date (${CURRENT_VERSION}). Use --force to reinstall."
+  ok "Already on the latest version (${CURRENT_VERSION}). Use --force to reinstall."
   exit 0
 fi
 
 if [[ "$CHECK_ONLY" -eq 1 ]]; then
   echo
-  echo -e "${YLW}Update available:${RST} ${CURRENT_VERSION} → ${REMOTE_VERSION}"
-  echo "Run 'krdos-update' to install."
+  echo -e "  Update available: ${YLW}${CURRENT_VERSION}${RST} → ${GRN}${REMOTE_VERSION}${RST}"
+  echo -e "  Run ${BLD}krdos-update${RST} to install."
   exit 0
 fi
 
-# ── Confirm (skip if non-interactive) ────────────────────────────────────────
+# ── Interactive confirmation (skip when piped / called from Flutter) ──────────
 if [[ -t 0 && "$FORCE" -eq 0 ]]; then
   echo
-  echo -e "Update ${YLW}${CURRENT_VERSION}${RST} → ${GRN}${REMOTE_VERSION}${RST}"
-  read -r -p "Apply update now? [Y/n] " REPLY
+  echo -e "  ${YLW}${CURRENT_VERSION}${RST}  →  ${GRN}${REMOTE_VERSION}${RST}"
+  read -r -p "  Apply update now? [Y/n] " REPLY
   REPLY="${REPLY:-Y}"
   if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
     info "Update cancelled."
@@ -116,106 +177,121 @@ if [[ -t 0 && "$FORCE" -eq 0 ]]; then
   fi
 fi
 
-# ── Download ──────────────────────────────────────────────────────────────────
+# ── Download assets ───────────────────────────────────────────────────────────
 mkdir -p "$TMP_DIR"
+
+# Download the main bundle
+# -L follows the redirect GitHub issues for asset downloads.
+# Private repo assets require the auth header even on the redirect target.
 info "Downloading bundle..."
-curl -fSL --progress-bar -o "$TMP_DIR/${ASSET_NAME}" "$BUNDLE_URL" \
-  || die "Download failed."
+curl -fSL --max-time 300 --progress-bar \
+  "${CURL_AUTH[@]}" \
+  -H "Accept: application/octet-stream" \
+  -o "$TMP_DIR/${ASSET_NAME}" \
+  "$BUNDLE_URL" \
+  || die "Bundle download failed."
 
-# Verify checksum if available
+# Download checksum file
 if [[ -n "$CHECKSUM_URL" ]]; then
-  info "Verifying checksum..."
-  curl -fsSL -o "$TMP_DIR/${CHECKSUM_NAME}" "$CHECKSUM_URL" \
+  info "Downloading checksum..."
+  curl -fsSL --max-time 30 \
+    "${CURL_AUTH[@]}" \
+    -H "Accept: application/octet-stream" \
+    -o "$TMP_DIR/${CHECKSUM_NAME}" \
+    "$CHECKSUM_URL" \
     || warn "Could not download checksum file — skipping verification."
-
-  if [[ -f "$TMP_DIR/${CHECKSUM_NAME}" ]]; then
-    EXPECTED=$(awk '{print $1}' "$TMP_DIR/${CHECKSUM_NAME}")
-    ACTUAL=$(sha256sum "$TMP_DIR/${ASSET_NAME}" | awk '{print $1}')
-    if [[ "$EXPECTED" != "$ACTUAL" ]]; then
-      die "Checksum mismatch! Expected: $EXPECTED  Got: $ACTUAL  Download may be corrupt."
-    fi
-    ok "Checksum verified."
-  fi
 fi
 
-# Download updated setup.sh if available
+# Verify integrity before touching anything on disk
+if [[ -f "$TMP_DIR/${CHECKSUM_NAME}" ]]; then
+  info "Verifying SHA-256 checksum..."
+  EXPECTED=$(awk '{print $1}' "$TMP_DIR/${CHECKSUM_NAME}")
+  ACTUAL=$(sha256sum "$TMP_DIR/${ASSET_NAME}" | awk '{print $1}')
+  if [[ "$EXPECTED" != "$ACTUAL" ]]; then
+    die "Checksum mismatch — download is corrupt or tampered.\n  Expected : $EXPECTED\n  Got      : $ACTUAL"
+  fi
+  ok "Checksum verified."
+else
+  warn "No checksum file — skipping integrity check."
+fi
+
+# Download setup.sh (updates services/config alongside the binary)
 if [[ -n "$SETUP_URL" ]]; then
   info "Downloading setup.sh..."
-  curl -fsSL -o "$TMP_DIR/setup.sh" "$SETUP_URL" || warn "Could not download setup.sh"
+  curl -fsSL --max-time 60 \
+    "${CURL_AUTH[@]}" \
+    -H "Accept: application/octet-stream" \
+    -o "$TMP_DIR/setup.sh" \
+    "$SETUP_URL" \
+    || warn "Could not download setup.sh — skipping service config update."
 fi
 
 # ── Extract ───────────────────────────────────────────────────────────────────
 info "Extracting bundle..."
 tar -xzf "$TMP_DIR/${ASSET_NAME}" -C "$TMP_DIR/" \
-  || die "Failed to extract bundle."
+  || die "Failed to extract bundle — archive may be corrupt."
 
 BUNDLE_DIR="$TMP_DIR/bundle"
-if [[ ! -d "$BUNDLE_DIR" ]]; then
-  die "Unexpected tarball structure — 'bundle/' directory not found."
-fi
-
-if [[ ! -f "$BUNDLE_DIR/krdos" ]]; then
-  die "Binary 'krdos' not found in extracted bundle."
-fi
+[[ -d "$BUNDLE_DIR" ]]   || die "Expected 'bundle/' directory not found in archive."
+[[ -f "$BUNDLE_DIR/krdos" ]] || die "Binary 'krdos' not found inside extracted bundle."
 
 # ── Backup current installation ───────────────────────────────────────────────
 BACKUP_DIR="/opt/krdos-backup-$(date +%Y%m%d-%H%M%S)"
 if [[ -d "$INSTALL_DIR" ]]; then
-  info "Backing up current installation to $BACKUP_DIR ..."
+  info "Backing up current installation → $BACKUP_DIR ..."
   cp -a "$INSTALL_DIR" "$BACKUP_DIR" \
-    && ok "Backup created: $BACKUP_DIR" \
-    || warn "Backup failed — continuing anyway."
+    && ok "Backup: $BACKUP_DIR" \
+    || warn "Backup failed — continuing anyway (no rollback available)."
 fi
 
 # ── Stop service ──────────────────────────────────────────────────────────────
 info "Stopping krdos-ui service..."
 systemctl stop "$SERVICE_NAME" 2>/dev/null || true
 sleep 1
-# Kill any lingering flutter process
 pkill -f "$INSTALL_DIR/krdos" 2>/dev/null || true
 sleep 1
 
 # ── Install ───────────────────────────────────────────────────────────────────
-info "Installing new bundle to $INSTALL_DIR ..."
+info "Installing to $INSTALL_DIR ..."
 mkdir -p "$INSTALL_DIR"
 
-# Sync files (rsync preferred, fallback cp)
 if command -v rsync &>/dev/null; then
-  rsync -a --delete "$BUNDLE_DIR/" "$INSTALL_DIR/" \
-    || die "rsync failed — trying fallback."
+  rsync -a --delete "$BUNDLE_DIR/" "$INSTALL_DIR/" || die "rsync failed."
 else
-  cp -a "$BUNDLE_DIR/." "$INSTALL_DIR/" \
-    || die "Copy failed."
+  cp -a "$BUNDLE_DIR/." "$INSTALL_DIR/"            || die "Copy failed."
 fi
-
 chmod +x "$INSTALL_DIR/krdos"
 ok "Bundle installed."
 
-# Run setup.sh from release if downloaded (updates services/scripts/config)
+# Run setup.sh from release (updates systemd services, scripts, conf files)
 if [[ -f "$TMP_DIR/setup.sh" ]]; then
-  info "Running setup.sh from this release (updates services & config)..."
+  info "Running setup.sh from release (service/config update)..."
   chmod +x "$TMP_DIR/setup.sh"
-  bash "$TMP_DIR/setup.sh" --update-only 2>&1 | sed 's/^/  /' || \
-    warn "setup.sh reported errors — continuing."
+  bash "$TMP_DIR/setup.sh" --update-only 2>&1 | sed 's/^/    /' \
+    || warn "setup.sh reported errors — continuing."
+  # Re-preserve the update.conf file (setup.sh must not overwrite it)
+  [[ -f "$CONFIG_FILE" ]] || warn "setup.sh removed $CONFIG_FILE — please recreate it."
 fi
 
-# ── Record new version ────────────────────────────────────────────────────────
+# ── Stamp new version ─────────────────────────────────────────────────────────
 echo "$REMOTE_VERSION" > "$VERSION_FILE"
-ok "Version recorded: $REMOTE_VERSION"
+ok "Version: $REMOTE_VERSION"
 
-# ── Prune old backups (keep last 3) ──────────────────────────────────────────
+# ── Prune old backups — keep the 3 most recent ───────────────────────────────
 ls -dt /opt/krdos-backup-* 2>/dev/null | tail -n +4 | xargs rm -rf 2>/dev/null || true
 
 # ── Restart service ───────────────────────────────────────────────────────────
 info "Starting krdos-ui service..."
 systemctl start "$SERVICE_NAME" \
-  && ok "krdos-ui restarted — new version is live." \
+  && ok "krdos-ui restarted — running new version." \
   || {
     err "Service failed to start. Attempting rollback..."
     if [[ -d "$BACKUP_DIR" ]]; then
       cp -a "$BACKUP_DIR/." "$INSTALL_DIR/"
-      systemctl start "$SERVICE_NAME" && warn "Rolled back to previous version." \
-        || err "Rollback start also failed. Check: journalctl -u krdos-ui"
+      echo "$CURRENT_VERSION" > "$VERSION_FILE"
+      systemctl start "$SERVICE_NAME" \
+        && warn "Rolled back to $CURRENT_VERSION." \
+        || err "Rollback also failed. Debug with: journalctl -u krdos-ui -n 50"
     fi
     exit 1
   }
@@ -223,6 +299,6 @@ systemctl start "$SERVICE_NAME" \
 echo
 echo -e "${GRN}╔═══════════════════════════════════════╗${RST}"
 echo -e "${GRN}║   KrdOS updated successfully!         ║${RST}"
-echo -e "${GRN}║   Version: ${REMOTE_VERSION}${RST}"
+echo -e "${GRN}║   ${REMOTE_VERSION:0:37}${RST}"
 echo -e "${GRN}╚═══════════════════════════════════════╝${RST}"
 echo

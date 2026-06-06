@@ -63,6 +63,11 @@ class UpdateState extends ChangeNotifier {
   DateTime? _lastChecked;
   DateTime? get lastChecked => _lastChecked;
 
+  /// Whether a GITHUB_TOKEN is present in /etc/krdos/update.conf.
+  /// Token value never crosses the platform channel — only this boolean.
+  bool _hasToken = false;
+  bool get hasToken => _hasToken;
+
   // ── Load prefs ────────────────────────────────────────────────────────────
   Future<void> load() async {
     final p = await SharedPreferences.getInstance();
@@ -71,6 +76,19 @@ class UpdateState extends ChangeNotifier {
     _autoInstall  = p.getBool('update_auto_install')     ?? false;
     final lastMs  = p.getInt('update_last_checked_ms');
     if (lastMs != null) _lastChecked = DateTime.fromMillisecondsSinceEpoch(lastMs);
+
+    // Bootstrap repo from /etc/krdos/update.conf when SharedPreferences is empty.
+    // (First run after install — conf file was written by setup.sh.)
+    final conf = await SystemBridge.getUpdateConfig();
+    _hasToken = (conf['has_token'] as bool?) ?? false;
+    if (_githubRepo.isEmpty) {
+      final confRepo = (conf['repo'] as String?) ?? '';
+      if (confRepo.isNotEmpty) {
+        _githubRepo = confRepo;
+        // Persist so the UI shows it without re-reading the conf file next time
+        await p.setString('update_github_repo', _githubRepo);
+      }
+    }
 
     // Read current version from OS
     _currentVersion = await SystemBridge.getOsVersion();

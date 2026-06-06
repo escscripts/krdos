@@ -469,6 +469,51 @@ class _SoftwareUpdateScreenState extends State<SoftwareUpdateScreen> {
               ]),
             ).animate().fadeIn(duration: 200.ms, delay: 240.ms),
 
+            const SizedBox(height: 12),
+
+            // ── Token status row ──────────────────────────────────────────
+            _Card(
+              child: Row(children: [
+                Icon(
+                  us.hasToken
+                      ? Icons.lock_rounded
+                      : Icons.lock_open_rounded,
+                  size: 16,
+                  color: us.hasToken
+                      ? const Color(0xFF4CAF50)
+                      : AppTheme.textSecondary,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Private Repository Access',
+                          style: TextStyle(
+                              color: AppTheme.textPrimary,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 3),
+                      Text(
+                        us.hasToken
+                            ? 'GitHub token configured in /etc/krdos/update.conf ✓'
+                            : 'No token — only public repos work. '
+                              'To use a private repo, run:\n'
+                              '  sudo nano /etc/krdos/update.conf\n'
+                              'Add: GITHUB_TOKEN=ghp_your_token',
+                        style: TextStyle(
+                            color: us.hasToken
+                                ? const Color(0xFF4CAF50)
+                                : AppTheme.textSecondary,
+                            fontSize: 11,
+                            height: 1.45),
+                      ),
+                    ],
+                  ),
+                ),
+              ]),
+            ).animate().fadeIn(duration: 200.ms, delay: 260.ms),
+
             const SizedBox(height: 32),
           ],
         ),
