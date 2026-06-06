@@ -1014,7 +1014,6 @@ static void on_method_call(FlMethodChannel* /*channel*/,
       strncpy(copy, line, sizeof(copy)-1);
       copy[sizeof(copy)-1] = '\0';
       // Find last three ':' separators
-      char* p = copy;
       int colons = 0;
       for (char* q = copy; *q; q++) if (*q == ':') colons++;
       if (colons < 3) { line = strtok(nullptr, "\n"); continue; }
