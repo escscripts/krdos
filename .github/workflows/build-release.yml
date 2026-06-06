@@ -8,6 +8,10 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+# Give the workflow write access to repo contents so it can create releases
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -48,10 +52,8 @@ jobs:
 
     # -----------------------------------------------------------------------
     # 4. Build
-    # -----------------------------------------------------------------------
     # NOTE: The repo root IS the Flutter project (pubspec.yaml is at root).
-    # No working-directory prefix needed.
-
+    # -----------------------------------------------------------------------
     - name: Flutter pub get
       run: flutter pub get
 
@@ -83,38 +85,36 @@ jobs:
         sha256sum krdos-bundle.tar.gz > krdos-bundle.tar.gz.sha256
 
     # -----------------------------------------------------------------------
-    # 7. Publish release (always overwrites "latest" tag)
+    # 7. Publish release — use gh CLI directly (no third-party action needed)
+    #    Always overwrites the "latest" rolling release tag.
     # -----------------------------------------------------------------------
-    - name: Delete old "latest" release (if exists)
+    - name: Publish GitHub release
       run: |
+        VERSION="${{ steps.ver.outputs.VERSION }}"
+
+        # Delete old "latest" release + tag if they exist
         gh release delete latest --yes 2>/dev/null || true
         git push origin :refs/tags/latest 2>/dev/null || true
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Create GitHub release
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: latest
-        name: "KrdOS latest (${{ steps.ver.outputs.VERSION }})"
-        body: |
-          **Automated build** from commit `${{ github.sha }}`
-          Built: `${{ steps.ver.outputs.VERSION }}`
+        # Create fresh release
+        gh release create latest \
+          --title "KrdOS latest (${VERSION})" \
+          --notes "**Automated build** from commit \`${{ github.sha }}\`
+Built: \`${VERSION}\`
 
-          ## Update from KrdOS terminal
-          ```bash
-          krdos-update
-          ```
-          That's it. The OS updates itself.
+## Install / update on KrdOS
+\`\`\`bash
+krdos-update
+\`\`\`
+That's it — the OS downloads, verifies, and installs automatically.
 
-          ## Manual download
-          Download `krdos-bundle.tar.gz`, verify with `krdos-bundle.tar.gz.sha256`.
-        prerelease: false
-        make_latest: true
-        files: |
-          build/linux/x64/release/krdos-bundle.tar.gz
-          build/linux/x64/release/krdos-bundle.tar.gz.sha256
-          install/setup.sh
+## Manual download
+Download \`krdos-bundle.tar.gz\` and verify with \`krdos-bundle.tar.gz.sha256\`." \
+          --latest \
+          build/linux/x64/release/krdos-bundle.tar.gz \
+          build/linux/x64/release/krdos-bundle.tar.gz.sha256 \
+          install/setup.sh \
+          install/krdos-update.sh \
           VERSION
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
