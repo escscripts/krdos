@@ -20,12 +20,29 @@ warn() { echo -e "${YLW}  ⚠  $*${RST}"; }
 err()  { echo -e "${RED}  ✗  $*  (continuing)${RST}"; }
 info() { echo -e "    →  $*"; }
 
-[[ $EUID -ne 0 ]] && { echo -e "${RED}Run as root: sudo bash setup.sh${RST}"; exit 1; }
+[[ $EUID -ne 0 ]] && { echo "Run as root: sudo bash setup.sh"; exit 1; }
+
+# ── Flags ─────────────────────────────────────────────────────────────────────
+SKIP_REBOOT=0
+UPDATE_ONLY=0
+for _arg in "$@"; do
+  case "$_arg" in
+    --no-reboot|--live) SKIP_REBOOT=1 ;;   # safe to run on a running OS
+    --update-only)      UPDATE_ONLY=1; SKIP_REBOOT=1 ;;
+  esac
+done
+
+# Detect if we're running INSIDE the live KrdOS session — never reboot then.
+[[ -n "${KRDOS_SHELL:-}" || -n "${DISPLAY:-}" ]] && SKIP_REBOOT=1
 
 echo ""
-echo -e "${CYN}  KrdOS Setup v2.0${RST}"
-echo    "  Installs X11, display management, networking, Bluetooth, audio, browser."
-echo    "  Works on any hardware. System will reboot when complete."
+echo "  KrdOS Setup v2.0"
+echo "  Installs X11, display management, networking, Bluetooth, audio, browser."
+if [[ "$SKIP_REBOOT" -eq 1 ]]; then
+  echo "  Running on LIVE system — reboot step will be SKIPPED."
+else
+  echo "  Works on any hardware. System will reboot when complete."
+fi
 echo ""
 read -r -p "  Press ENTER to start (Ctrl+C to cancel): "
 
@@ -808,11 +825,10 @@ GITHUB_REPO=escscripts/krdos
 # Leave blank (or remove the line) for public repos — no token needed.
 # Generate a token at: https://github.com/settings/tokens
 #   Required scopes: repo (for private repos) or public_repo (for public repos)
-# Example:
-#   GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# Paste your token on the line below (replace the empty value):
 GITHUB_TOKEN=
 UPDATECONF
-  ok "Created $UPDATE_CONF (template with blank token)"
+  ok "Created $UPDATE_CONF (template — fill in GITHUB_TOKEN for private repos)"
 else
   ok "$UPDATE_CONF already exists — not overwritten (your token is safe)"
 fi
@@ -827,7 +843,7 @@ CONF_TOKEN=$(grep -m1 '^GITHUB_TOKEN=' "$UPDATE_CONF" 2>/dev/null | cut -d= -f2-
 if [[ -z "$CONF_TOKEN" ]]; then
   warn "GITHUB_TOKEN is not set in $UPDATE_CONF"
   warn "  → For private repos, run:  sudo nano $UPDATE_CONF"
-  warn "    and add:  GITHUB_TOKEN=ghp_your_token_here"
+  warn "    and add:  GITHUB_TOKEN=<your_personal_access_token>"
   warn "  → Public repos work without a token."
 fi
 
@@ -898,25 +914,29 @@ systemctl daemon-reload
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
-echo -e "${GRN}╔═════════════════════════════════════════════════════════════════════╗${RST}"
-echo -e "${GRN}║               KrdOS Setup Complete  ✓                             ║${RST}"
-echo -e "${GRN}╠═════════════════════════════════════════════════════════════════════╣${RST}"
-echo -e "${GRN}║  Display   : X11 (xorg) + matchbox kiosk WM + fullscreen watchdog ║${RST}"
-echo -e "${GRN}║  Resolution: auto-detected at boot, any number of monitors        ║${RST}"
-echo -e "${GRN}║  Hotplug   : udev rule reconfigures displays on plug/unplug       ║${RST}"
-echo -e "${GRN}║  Flutter   : $FLUTTER_APP${RST}"
-echo -e "${GRN}║  WiFi      : NetworkManager + firmware (Intel/RTL/ATH/BCM/MTK)   ║${RST}"
-echo -e "${GRN}║  Bluetooth : BlueZ (auto-enable on boot)                         ║${RST}"
-echo -e "${GRN}║  Audio     : PulseAudio (started with X session)                 ║${RST}"
-echo -e "${GRN}║  Browser   : Firefox ESR                                         ║${RST}"
-echo -e "${GRN}║  Power     : reboot/shutdown via polkit + sudoers (no password)  ║${RST}"
-echo -e "${GRN}║  Boot chain: systemd → krdos-ui.service → dbus-run-session       ║${RST}"
-echo -e "${GRN}║              → Xorg vt1 → configure-displays → matchbox → Flutter ║${RST}"
-echo -e "${GRN}║  Updates   : run 'krdos-update' in terminal (pulls from GitHub)  ║${RST}"
-echo -e "${GRN}║              daily auto-check via systemd timer                  ║${RST}"
-echo -e "${GRN}╠═════════════════════════════════════════════════════════════════════╣${RST}"
-echo -e "${GRN}║  Rebooting in 5 seconds…                                         ║${RST}"
-echo -e "${GRN}╚═════════════════════════════════════════════════════════════════════╝${RST}"
+echo "╔═════════════════════════════════════════════════════════════════════╗"
+echo "║               KrdOS Setup Complete                                 ║"
+echo "╠═════════════════════════════════════════════════════════════════════╣"
+echo "║  Display   : X11 (xorg) + matchbox kiosk WM + fullscreen watchdog ║"
+echo "║  Resolution: auto-detected at boot, any number of monitors        ║"
+echo "║  Hotplug   : udev rule reconfigures displays on plug/unplug       ║"
+echo "║  Flutter   : $FLUTTER_APP"
+echo "║  WiFi      : NetworkManager + firmware (Intel/RTL/ATH/BCM/MTK)   ║"
+echo "║  Bluetooth : BlueZ (auto-enable on boot)                         ║"
+echo "║  Audio     : PulseAudio (started with X session)                 ║"
+echo "║  Browser   : Firefox ESR                                         ║"
+echo "║  Power     : reboot/shutdown via polkit + sudoers (no password)  ║"
+echo "║  Updates   : run 'krdos-update' in terminal (pulls from GitHub)  ║"
+echo "║              daily auto-check via systemd timer                  ║"
+echo "╚═════════════════════════════════════════════════════════════════════╝"
 echo ""
-sleep 5
-reboot
+
+if [[ "$SKIP_REBOOT" -eq 1 ]]; then
+  echo "  Setup complete. Reboot skipped (running on live system)."
+  echo "  To apply all changes: sudo reboot"
+  echo "  To update the Flutter binary: sudo krdos-update"
+else
+  echo "  Rebooting in 5 seconds…"
+  sleep 5
+  reboot
+fi

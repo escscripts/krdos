@@ -21,14 +21,23 @@ TMP_DIR="/tmp/krdos-update-$$"
 ASSET_NAME="krdos-bundle.tar.gz"
 CHECKSUM_NAME="krdos-bundle.tar.gz.sha256"
 
-# Colours
-RED='\033[0;31m'; GRN='\033[0;32m'; YLW='\033[1;33m'
-CYN='\033[0;36m'; BLD='\033[1m'; RST='\033[0m'
+# Colours — use tput so we get terminal-native sequences (or nothing at all
+# if the terminal doesn't support colours, e.g. the KrdOS built-in terminal).
+if [ -t 1 ] && command -v tput &>/dev/null && tput setaf 1 &>/dev/null 2>&1; then
+  RED=$(tput setaf 1)
+  GRN=$(tput setaf 2)
+  YLW=$(tput setaf 3)
+  CYN=$(tput setaf 6)
+  BLD=$(tput bold)
+  RST=$(tput sgr0)
+else
+  RED=''; GRN=''; YLW=''; CYN=''; BLD=''; RST=''
+fi
 
-info()  { echo -e "${CYN}[UPDATE]${RST} $*"; }
-ok()    { echo -e "${GRN}[  OK  ]${RST} $*"; }
-warn()  { echo -e "${YLW}[ WARN ]${RST} $*"; }
-err()   { echo -e "${RED}[ERROR ]${RST} $*"; }
+info()  { printf '%s[UPDATE]%s %s\n' "$CYN" "$RST" "$*"; }
+ok()    { printf '%s[  OK  ]%s %s\n' "$GRN" "$RST" "$*"; }
+warn()  { printf '%s[ WARN ]%s %s\n' "$YLW" "$RST" "$*"; }
+err()   { printf '%s[ERROR ]%s %s\n' "$RED" "$RST" "$*"; }
 die()   { err "$*"; cleanup; exit 1; }
 
 cleanup() { rm -rf "$TMP_DIR" 2>/dev/null; }
@@ -47,8 +56,8 @@ done
 # ── Load configuration from /etc/krdos/update.conf ───────────────────────────
 # The config file is the single source of truth for repo + token.
 # It is chmod 600 / root-only and is NEVER committed to git.
-GITHUB_REPO=""
-GITHUB_TOKEN=""
+GITHUB_REPO="escscripts/krdos"   # fallback if conf file missing
+GITHUB_TOKEN=""                   # NEVER put a real token here — use /etc/krdos/update.conf
 
 if [[ -f "$CONFIG_FILE" ]]; then
   # Parse key=value lines safely — no eval, no sourcing arbitrary code.
@@ -94,11 +103,9 @@ else
   warn "No GITHUB_TOKEN in $CONFIG_FILE — will only work with public repos."
 fi
 
-echo
-echo -e "${BLD}╔═══════════════════════════════════════╗${RST}"
-echo -e "${BLD}║       KrdOS Self-Update System        ║${RST}"
-echo -e "${BLD}╚═══════════════════════════════════════╝${RST}"
-echo
+printf '\n%s╔═══════════════════════════════════════╗%s\n' "$BLD" "$RST"
+printf '%s║       KrdOS Self-Update System        ║%s\n' "$BLD" "$RST"
+printf '%s╚═══════════════════════════════════════╝%s\n\n' "$BLD" "$RST"
 
 # ── Read current installed version ───────────────────────────────────────────
 CURRENT_VERSION="none"
@@ -159,16 +166,26 @@ if [[ "$CURRENT_VERSION" == "$REMOTE_VERSION" && "$FORCE" -eq 0 ]]; then
 fi
 
 if [[ "$CHECK_ONLY" -eq 1 ]]; then
-  echo
-  echo -e "  Update available: ${YLW}${CURRENT_VERSION}${RST} → ${GRN}${REMOTE_VERSION}${RST}"
-  echo -e "  Run ${BLD}krdos-update${RST} to install."
+  printf '\n  Update available: %s%s%s -> %s%s%s\n' \
+    "$YLW" "$CURRENT_VERSION" "$RST" "$GRN" "$REMOTE_VERSION" "$RST"
+  printf '  Run %skrdos-update%s to install.\n' "$BLD" "$RST"
   exit 0
+fi
+
+# ── Guard: warn if running from inside the Flutter UI terminal ────────────────
+# krdos-update stops krdos-ui.service, which kills Flutter and this terminal.
+# That is NORMAL — Flutter restarts automatically. But if you need to watch the
+# log, open a second TTY first (press Ctrl+Alt+F2, log in as root, run there).
+if [[ -n "${KRDOS_SHELL:-}" ]]; then
+  printf '\n%s[WARNING]%s Running krdos-update from inside the KrdOS terminal.\n' "$YLW" "$RST"
+  printf '  The screen will go BLACK for ~10 seconds while the service restarts.\n'
+  printf '  That is normal — Flutter will relaunch automatically.\n'
+  printf '  To watch the full log: open a second TTY with Ctrl+Alt+F2.\n\n'
 fi
 
 # ── Interactive confirmation (skip when piped / called from Flutter) ──────────
 if [[ -t 0 && "$FORCE" -eq 0 ]]; then
-  echo
-  echo -e "  ${YLW}${CURRENT_VERSION}${RST}  →  ${GRN}${REMOTE_VERSION}${RST}"
+  printf '\n  %s%s%s  ->  %s%s%s\n' "$YLW" "$CURRENT_VERSION" "$RST" "$GRN" "$REMOTE_VERSION" "$RST"
   read -r -p "  Apply update now? [Y/n] " REPLY
   REPLY="${REPLY:-Y}"
   if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
@@ -296,9 +313,7 @@ systemctl start "$SERVICE_NAME" \
     exit 1
   }
 
-echo
-echo -e "${GRN}╔═══════════════════════════════════════╗${RST}"
-echo -e "${GRN}║   KrdOS updated successfully!         ║${RST}"
-echo -e "${GRN}║   ${REMOTE_VERSION:0:37}${RST}"
-echo -e "${GRN}╚═══════════════════════════════════════╝${RST}"
-echo
+printf '\n%s╔═══════════════════════════════════════╗%s\n' "$GRN" "$RST"
+printf '%s║   KrdOS updated successfully!         ║%s\n' "$GRN" "$RST"
+printf '%s║   %-37s║%s\n' "$GRN" "${REMOTE_VERSION:0:37}" "$RST"
+printf '%s╚═══════════════════════════════════════╝%s\n\n' "$GRN" "$RST"
