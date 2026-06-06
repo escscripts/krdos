@@ -159,11 +159,14 @@ pkg \
 ok "Audio installed"
 
 # Browser + utilities
+# Install chromium (Kali's package name) and firefox-esr as backup.
+# The KrdOS browser screen tries: chromium → chromium-browser → google-chrome
+# → firefox → firefox-esr → xdg-open.  Having both gives the best chance.
 pkg \
-  firefox-esr \
+  chromium firefox-esr \
   htop procps kmod usbutils pciutils lsof rsync sudo util-linux \
   dbus dbus-x11 policykit-1
-ok "Firefox + utilities installed"
+ok "Chromium + Firefox + utilities installed"
 
 # USB auto-mount (udisks2 handles plugging/unplugging, udiskie does tray)
 pkg udisks2 udiskie

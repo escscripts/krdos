@@ -1426,18 +1426,30 @@ static void on_method_call(FlMethodChannel* /*channel*/,
       resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(ok)));
     }
 
-  // ── Browser: launch Firefox ───────────────────────────────────────────────
+  // ── Browser: launch best available browser ───────────────────────────────
   } else if (strcmp(method, "browser.open") == 0) {
     const char* url = "about:blank";
     if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
       FlValue* v = fl_value_lookup_string(args, "url");
       if (v) url = fl_value_get_string(v);
     }
-    char cmd[2048];
-    // Try firefox-esr, firefox, chromium in order; run detached
+    // Build a shell snippet that:
+    //  1. Preserves DISPLAY (falls back to :0 if unset — common in kiosk envs)
+    //  2. Tries every common browser binary name in priority order
+    //  3. Falls through to xdg-open as a last resort
+    //  4. Runs detached so Flutter is not blocked
+    char cmd[4096];
     snprintf(cmd, sizeof(cmd),
-      "DISPLAY=:0 (firefox-esr \"%s\" || firefox \"%s\" || chromium-browser \"%s\") &",
-      url, url, url);
+      "DISPLAY=\"${DISPLAY:-:0}\" XAUTHORITY=\"${XAUTHORITY:-/root/.Xauthority}\" "
+      "(chromium \"%s\" 2>/dev/null"
+      " || chromium-browser \"%s\" 2>/dev/null"
+      " || google-chrome \"%s\" 2>/dev/null"
+      " || google-chrome-stable \"%s\" 2>/dev/null"
+      " || firefox \"%s\" 2>/dev/null"
+      " || firefox-esr \"%s\" 2>/dev/null"
+      " || xdg-open \"%s\" 2>/dev/null"
+      ") >/dev/null 2>&1 &",
+      url, url, url, url, url, url, url);
     shell_ok(cmd);
     resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(true)));
 
