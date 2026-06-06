@@ -14,8 +14,13 @@
 # =============================================================================
 
 CONFIG_FILE="/etc/krdos/update.conf"
-INSTALL_DIR="/opt/krdos"
-VERSION_FILE="$INSTALL_DIR/version"
+# ── Install directory ──────────────────────────────────────────────────────────
+# The Flutter bundle lives in /opt/customos/ — that is the directory the
+# krdos-ui launcher script (written by setup.sh) hardcodes at install time.
+# /opt/krdos/ is kept ONLY for the version stamp file so the systemd
+# update-check service (ConditionPathExists=/opt/krdos/version) works.
+INSTALL_DIR="/opt/customos"
+VERSION_FILE="/opt/krdos/version"
 SERVICE_NAME="krdos-ui"
 TMP_DIR="/tmp/krdos-update-$$"
 ASSET_NAME="krdos-bundle.tar.gz"
@@ -253,7 +258,7 @@ BUNDLE_DIR="$TMP_DIR/bundle"
 [[ -f "$BUNDLE_DIR/krdos" ]] || die "Binary 'krdos' not found inside extracted bundle."
 
 # ── Backup current installation ───────────────────────────────────────────────
-BACKUP_DIR="/opt/krdos-backup-$(date +%Y%m%d-%H%M%S)"
+BACKUP_DIR="/opt/customos-backup-$(date +%Y%m%d-%H%M%S)"
 if [[ -d "$INSTALL_DIR" ]]; then
   info "Backing up current installation → $BACKUP_DIR ..."
   cp -a "$INSTALL_DIR" "$BACKUP_DIR" \
@@ -278,9 +283,20 @@ else
   cp -a "$BUNDLE_DIR/." "$INSTALL_DIR/"            || die "Copy failed."
 fi
 chmod +x "$INSTALL_DIR/krdos"
+
+# Register the new shared libs (.so files) with the dynamic linker.
+# The launcher script sets LD_LIBRARY_PATH too, but ldconfig makes the
+# libs available system-wide and avoids any stale linker cache issues.
+if [[ -d "$INSTALL_DIR/lib" ]]; then
+  echo "$INSTALL_DIR/lib" > /etc/ld.so.conf.d/krdos-flutter.conf
+  ldconfig
+  ok "Shared libs registered: $INSTALL_DIR/lib"
+fi
+
 ok "Bundle installed."
 
-# Run setup.sh from release (updates systemd services, scripts, conf files)
+# Run setup.sh from release (updates systemd services, scripts, conf files).
+# This also regenerates /usr/local/bin/krdos-ui pointing to $INSTALL_DIR.
 if [[ -f "$TMP_DIR/setup.sh" ]]; then
   info "Running setup.sh from release (service/config update)..."
   chmod +x "$TMP_DIR/setup.sh"
@@ -291,11 +307,12 @@ if [[ -f "$TMP_DIR/setup.sh" ]]; then
 fi
 
 # ── Stamp new version ─────────────────────────────────────────────────────────
+mkdir -p /opt/krdos
 echo "$REMOTE_VERSION" > "$VERSION_FILE"
 ok "Version: $REMOTE_VERSION"
 
 # ── Prune old backups — keep the 3 most recent ───────────────────────────────
-ls -dt /opt/krdos-backup-* 2>/dev/null | tail -n +4 | xargs rm -rf 2>/dev/null || true
+ls -dt /opt/customos-backup-* 2>/dev/null | tail -n +4 | xargs rm -rf 2>/dev/null || true
 
 # ── Restart service ───────────────────────────────────────────────────────────
 info "Starting krdos-ui service..."
