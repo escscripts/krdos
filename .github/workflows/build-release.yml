@@ -49,12 +49,13 @@ jobs:
     # -----------------------------------------------------------------------
     # 4. Build
     # -----------------------------------------------------------------------
+    # NOTE: The repo root IS the Flutter project (pubspec.yaml is at root).
+    # No working-directory prefix needed.
+
     - name: Flutter pub get
-      working-directory: custom_os_ui
       run: flutter pub get
 
     - name: Build Linux release
-      working-directory: custom_os_ui
       run: flutter build linux --release
 
     # -----------------------------------------------------------------------
@@ -68,7 +69,7 @@ jobs:
         VERSION="${BUILD_DATE}-${SHORT_SHA}"
         echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
         # Write version file inside the bundle so KrdOS can read it
-        echo "${VERSION}" > custom_os_ui/build/linux/x64/release/bundle/version
+        echo "${VERSION}" > build/linux/x64/release/bundle/version
         # Also keep a root-level VERSION file for reference
         echo "${VERSION}" > VERSION
 
@@ -77,7 +78,7 @@ jobs:
     # -----------------------------------------------------------------------
     - name: Package bundle as tarball
       run: |
-        cd custom_os_ui/build/linux/x64/release
+        cd build/linux/x64/release
         tar -czf krdos-bundle.tar.gz bundle/
         sha256sum krdos-bundle.tar.gz > krdos-bundle.tar.gz.sha256
 
@@ -111,8 +112,8 @@ jobs:
         prerelease: false
         make_latest: true
         files: |
-          custom_os_ui/build/linux/x64/release/krdos-bundle.tar.gz
-          custom_os_ui/build/linux/x64/release/krdos-bundle.tar.gz.sha256
+          build/linux/x64/release/krdos-bundle.tar.gz
+          build/linux/x64/release/krdos-bundle.tar.gz.sha256
           install/setup.sh
           VERSION
       env:
