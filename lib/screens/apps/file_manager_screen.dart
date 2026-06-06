@@ -601,7 +601,7 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
 
   Widget _buildMainView(List<FsEntry> list) {
     if (_loading) {
-      return const Center(child: CircularProgressIndicator(color: AppTheme.accent));
+      return Center(child: CircularProgressIndicator(color: AppTheme.accent));
     }
     if (_loadError != null) {
       return Center(
@@ -887,7 +887,7 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
           if (!e.isDir)
             Expanded(
               child: _loadingPreview
-                  ? const Center(
+                  ? Center(
                       child: CircularProgressIndicator(color: AppTheme.accent))
                   : SingleChildScrollView(
                       padding: const EdgeInsets.all(12),
