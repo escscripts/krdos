@@ -8,7 +8,8 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
-# Give the workflow write access to repo contents so it can create releases
+# Give the workflow write access to repo contents so it can create releases.
+# Without this, GITHUB_TOKEN cannot create tags or releases.
 permissions:
   contents: write
 
@@ -70,9 +71,7 @@ jobs:
         BUILD_DATE=$(date -u +%Y%m%d-%H%M)
         VERSION="${BUILD_DATE}-${SHORT_SHA}"
         echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
-        # Write version file inside the bundle so KrdOS can read it
         echo "${VERSION}" > build/linux/x64/release/bundle/version
-        # Also keep a root-level VERSION file for reference
         echo "${VERSION}" > VERSION
 
     # -----------------------------------------------------------------------
@@ -85,31 +84,43 @@ jobs:
         sha256sum krdos-bundle.tar.gz > krdos-bundle.tar.gz.sha256
 
     # -----------------------------------------------------------------------
-    # 7. Publish release — use gh CLI directly (no third-party action needed)
-    #    Always overwrites the "latest" rolling release tag.
+    # 7. Write release notes to a file (avoids YAML/shell quoting issues)
+    # -----------------------------------------------------------------------
+    - name: Write release notes
+      run: |
+        VERSION="${{ steps.ver.outputs.VERSION }}"
+        SHA="${{ github.sha }}"
+        cat > /tmp/release-notes.md << EOF
+        # KrdOS ${VERSION}
+
+        Automated build from commit ${SHA}.
+
+        ## Update on your KrdOS machine
+
+        Open the KrdOS terminal and run:
+
+            krdos-update
+
+        The system will download, verify (SHA-256), and install the new version automatically.
+
+        ## Manual install
+
+        Download krdos-bundle.tar.gz and verify with krdos-bundle.tar.gz.sha256
+        EOF
+
+    # -----------------------------------------------------------------------
+    # 8. Publish release — delete old "latest" then recreate
     # -----------------------------------------------------------------------
     - name: Publish GitHub release
       run: |
         VERSION="${{ steps.ver.outputs.VERSION }}"
 
-        # Delete old "latest" release + tag if they exist
         gh release delete latest --yes 2>/dev/null || true
         git push origin :refs/tags/latest 2>/dev/null || true
 
-        # Create fresh release
         gh release create latest \
           --title "KrdOS latest (${VERSION})" \
-          --notes "**Automated build** from commit \`${{ github.sha }}\`
-Built: \`${VERSION}\`
-
-## Install / update on KrdOS
-\`\`\`bash
-krdos-update
-\`\`\`
-That's it — the OS downloads, verifies, and installs automatically.
-
-## Manual download
-Download \`krdos-bundle.tar.gz\` and verify with \`krdos-bundle.tar.gz.sha256\`." \
+          --notes-file /tmp/release-notes.md \
           --latest \
           build/linux/x64/release/krdos-bundle.tar.gz \
           build/linux/x64/release/krdos-bundle.tar.gz.sha256 \
