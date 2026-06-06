@@ -1,0 +1,9 @@
+[Unit]
+Description=KrdOS Weekly Maintenance
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/maintenance.sh
+StandardOutput=journal
+StandardError=journal

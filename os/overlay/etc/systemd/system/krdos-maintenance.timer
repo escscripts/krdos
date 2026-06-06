@@ -1,0 +1,11 @@
+[Unit]
+Description=KrdOS Weekly Maintenance Timer
+Requires=krdos-maintenance.service
+
+[Timer]
+OnCalendar=Sun *-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

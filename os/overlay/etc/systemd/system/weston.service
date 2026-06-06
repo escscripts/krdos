@@ -1,0 +1,36 @@
+[Unit]
+Description=Weston Wayland Compositor (with XWayland for GTK/Flutter)
+After=systemd-udev-settle.service
+After=systemd-logind.service
+Requires=systemd-logind.service
+
+[Service]
+Type=simple
+User=root
+
+# PAMName + TTY let Weston claim VT2 and get DRM/KMS permissions from logind
+PAMName=login
+TTYPath=/dev/tty2
+StandardInput=tty
+UtmpIdentifier=tty2
+
+Environment=XDG_RUNTIME_DIR=/run/user/0
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus
+Environment=WLR_NO_HARDWARE_CURSORS=1
+
+ExecStartPre=/bin/mkdir -p /run/user/0
+ExecStartPre=/bin/chmod 700 /run/user/0
+
+# --xwayland starts the X11 compatibility layer so GTK (and thus Flutter) works.
+# drm backend → fbdev fallback → headless (for CI/testing).
+ExecStart=/bin/sh -c '\
+  weston --backend=drm --xwayland --idle-time=0 --log=/var/log/weston.log || \
+  weston --backend=fbdev --xwayland --idle-time=0 --log=/var/log/weston.log || \
+  weston --backend=headless --xwayland --idle-time=0 --log=/var/log/weston.log'
+
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+

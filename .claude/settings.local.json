@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\meeru\\\\Desktop\\\\Custom_OS\\\\custom_os_ui\" -Recurse -Force)",
+      "Bash(Select-Object -Property FullName, PSIsContainer)",
+      "Bash(Sort-Object FullName)",
+      "Bash(Format-Table -AutoSize)",
+      "PowerShell(New-Item -ItemType Directory -Force \"C:\\\\Users\\\\meeru\\\\Desktop\\\\Custom_OS\\\\custom_os_ui\\\\os\\\\overlay\\\\etc\\\\systemd\\\\system\")",
+      "PowerShell(New-Item -ItemType Directory -Force \"C:\\\\Users\\\\meeru\\\\Desktop\\\\Custom_OS\\\\custom_os_ui\\\\os\\\\overlay\\\\etc\\\\systemd\\\\system\\\\getty@tty1.service.d\")",
+      "PowerShell(New-Item -ItemType Directory -Force \"C:\\\\Users\\\\meeru\\\\Desktop\\\\Custom_OS\\\\custom_os_ui\\\\os\\\\overlay\\\\usr\\\\local\\\\bin\")",
+      "PowerShell(New-Item -ItemType Directory -Force \"C:\\\\Users\\\\meeru\\\\Desktop\\\\Custom_OS\\\\custom_os_ui\\\\os\\\\overlay\\\\home\\\\admin\")",
+      "PowerShell(New-Item -ItemType Directory -Force \"C:\\\\Users\\\\meeru\\\\Desktop\\\\Custom_OS\\\\custom_os_ui\\\\install\")"
+    ]
+  }
+}

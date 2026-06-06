@@ -1,0 +1,119 @@
+name: Build & Release KrdOS
+
+# Triggers:
+#   - Every push to main  → creates/updates the "latest" release
+#   - Manual trigger      → useful for testing
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    # -----------------------------------------------------------------------
+    # 1. Checkout
+    # -----------------------------------------------------------------------
+    - name: Checkout source
+      uses: actions/checkout@v4
+
+    # -----------------------------------------------------------------------
+    # 2. System packages Flutter Linux needs to compile
+    # -----------------------------------------------------------------------
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          clang cmake ninja-build pkg-config \
+          libgtk-3-dev libblkid-dev liblzma-dev \
+          libglib2.0-dev libpango1.0-dev libcairo2-dev \
+          libatk1.0-dev libgdk-pixbuf-2.0-dev \
+          libsecret-1-dev libjsoncpp-dev \
+          libssl-dev
+
+    # -----------------------------------------------------------------------
+    # 3. Flutter SDK
+    # -----------------------------------------------------------------------
+    - name: Setup Flutter (stable)
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.x'
+        channel: 'stable'
+        cache: true
+
+    - name: Enable Linux desktop
+      run: flutter config --enable-linux-desktop
+
+    # -----------------------------------------------------------------------
+    # 4. Build
+    # -----------------------------------------------------------------------
+    - name: Flutter pub get
+      working-directory: custom_os_ui
+      run: flutter pub get
+
+    - name: Build Linux release
+      working-directory: custom_os_ui
+      run: flutter build linux --release
+
+    # -----------------------------------------------------------------------
+    # 5. Stamp version into the bundle
+    # -----------------------------------------------------------------------
+    - name: Create version stamp
+      id: ver
+      run: |
+        SHORT_SHA=$(git rev-parse --short HEAD)
+        BUILD_DATE=$(date -u +%Y%m%d-%H%M)
+        VERSION="${BUILD_DATE}-${SHORT_SHA}"
+        echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+        # Write version file inside the bundle so KrdOS can read it
+        echo "${VERSION}" > custom_os_ui/build/linux/x64/release/bundle/version
+        # Also keep a root-level VERSION file for reference
+        echo "${VERSION}" > VERSION
+
+    # -----------------------------------------------------------------------
+    # 6. Package
+    # -----------------------------------------------------------------------
+    - name: Package bundle as tarball
+      run: |
+        cd custom_os_ui/build/linux/x64/release
+        tar -czf krdos-bundle.tar.gz bundle/
+        sha256sum krdos-bundle.tar.gz > krdos-bundle.tar.gz.sha256
+
+    # -----------------------------------------------------------------------
+    # 7. Publish release (always overwrites "latest" tag)
+    # -----------------------------------------------------------------------
+    - name: Delete old "latest" release (if exists)
+      run: |
+        gh release delete latest --yes 2>/dev/null || true
+        git push origin :refs/tags/latest 2>/dev/null || true
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create GitHub release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: latest
+        name: "KrdOS latest (${{ steps.ver.outputs.VERSION }})"
+        body: |
+          **Automated build** from commit `${{ github.sha }}`
+          Built: `${{ steps.ver.outputs.VERSION }}`
+
+          ## Update from KrdOS terminal
+          ```bash
+          krdos-update
+          ```
+          That's it. The OS updates itself.
+
+          ## Manual download
+          Download `krdos-bundle.tar.gz`, verify with `krdos-bundle.tar.gz.sha256`.
+        prerelease: false
+        make_latest: true
+        files: |
+          custom_os_ui/build/linux/x64/release/krdos-bundle.tar.gz
+          custom_os_ui/build/linux/x64/release/krdos-bundle.tar.gz.sha256
+          install/setup.sh
+          VERSION
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

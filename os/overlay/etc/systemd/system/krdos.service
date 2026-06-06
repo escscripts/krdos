@@ -1,0 +1,28 @@
+[Unit]
+Description=KrdOS Flutter Shell
+After=weston.service network.target
+Wants=weston.service
+
+[Service]
+Type=simple
+User=root
+Environment=XDG_RUNTIME_DIR=/run/user/0
+# XWayland display: Flutter GTK connects here (X11 compatibility via Weston)
+Environment=DISPLAY=:0
+# Also set Wayland in case GTK picks native Wayland
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=KRDOS_SHELL=1
+Environment=HOME=/root
+WorkingDirectory=/opt/krdos
+
+# Wait up to 15 s for XWayland's lock file — guarantees X11 is ready before Flutter starts
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do [ -e /tmp/.X0-lock ] && exit 0; sleep 0.5; done; exit 1'
+
+ExecStart=/opt/krdos/krdos
+Restart=always
+RestartSec=2
+# On crash: restart immediately — no black screen
+RestartForceExitStatus=1 6
+
+[Install]
+WantedBy=multi-user.target

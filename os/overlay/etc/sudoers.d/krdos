@@ -1,0 +1,22 @@
+# KrdOS — allow the Flutter shell to invoke hardware control commands
+# without a password prompt.  These are the only commands the shell needs.
+Defaults:root !requiretty
+
+root ALL=(ALL) NOPASSWD: ALL
+
+krdos ALL=(ALL) NOPASSWD: \
+  /usr/sbin/rfkill, \
+  /usr/bin/nmcli, \
+  /sbin/modprobe, \
+  /usr/bin/wg-quick, \
+  /usr/sbin/openvpn, \
+  /sbin/ip, \
+  /usr/bin/macchanger, \
+  /bin/systemctl, \
+  /sbin/reboot, \
+  /sbin/poweroff, \
+  /usr/bin/amixer, \
+  /usr/bin/pactl, \
+  /usr/local/bin/kill-switch.sh, \
+  /usr/local/bin/ip-rotator.sh, \
+  /usr/local/bin/vpn-control.sh
