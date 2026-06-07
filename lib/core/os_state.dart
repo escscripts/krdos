@@ -275,9 +275,15 @@ class OsState extends ChangeNotifier {
     notifyListeners();
     _save();
     if (_bluetoothEnabled) {
-      SystemBridge.bluetoothEnable();
+      // Enable BT stack, then wait for it to power on before refreshing device list
+      SystemBridge.bluetoothEnable().then((_) async {
+        await Future.delayed(const Duration(seconds: 2));
+        await refreshBluetoothDevices();
+      });
     } else {
       SystemBridge.bluetoothDisable();
+      _btDevices.clear();
+      notifyListeners();
     }
   }
 
@@ -473,7 +479,13 @@ class OsState extends ChangeNotifier {
     // Kick off real data polling after prefs load
     startBatteryPolling();
     scanWifi();
-    if (_bluetoothEnabled) refreshBluetoothDevices();
+    if (_bluetoothEnabled) {
+      // Re-enable BT hardware (rfkill + bluetoothctl) since it may have been off at boot
+      SystemBridge.bluetoothEnable().then((_) async {
+        await Future.delayed(const Duration(seconds: 2));
+        await refreshBluetoothDevices();
+      });
+    }
   }
 
   Future<void> _save() async {

@@ -244,14 +244,6 @@ class ShellAppRegistry {
       keywords: ['info', 'build', 'kernel'],
     ),
     ShellAppDef(
-      id: 'storage',
-      title: 'Storage',
-      icon: Icons.storage,
-      color: Color(0xFF795548),
-      category: 'TOOLS',
-      keywords: ['disk', 'drive', 'space'],
-    ),
-    ShellAppDef(
       id: 'debugger',
       title: 'Debugger',
       icon: Icons.bug_report,
@@ -488,7 +480,6 @@ class ShellAppRegistry {
         return NetworkSettingsScreen();
       case 'monitor':
       case 'system':
-      case 'storage':
       case 'analytics':
         return const AboutScreen();
       case 'allapps':
