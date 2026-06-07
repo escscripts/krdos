@@ -126,6 +126,7 @@ jobs:
           build/linux/x64/release/krdos-bundle.tar.gz.sha256 \
           install/setup.sh \
           install/krdos-update.sh \
+          install/krdos-offline-update.sh \
           VERSION
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
