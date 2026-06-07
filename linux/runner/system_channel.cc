@@ -50,16 +50,19 @@ static void webwin_ensure_created() {
   if (parent) gtk_window_set_transient_for(GTK_WINDOW(g_webwin), parent);
 
   // Build WebView with sensible defaults.
+  // Hardware acceleration is disabled — GPU drivers on the target (Kali/Acer)
+  // cause a black screen with ALWAYS policy.  Software rendering works on
+  // every GPU and is fast enough for normal browsing.
   WebKitSettings* ws = webkit_settings_new();
   webkit_settings_set_enable_javascript(ws, TRUE);
-  webkit_settings_set_enable_webgl(ws, TRUE);
+  webkit_settings_set_enable_webgl(ws, FALSE);  // needs GPU, keep off
   webkit_settings_set_enable_media(ws, TRUE);
   webkit_settings_set_allow_file_access_from_file_urls(ws, FALSE);
   webkit_settings_set_user_agent(ws,
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 "
     "(KHTML, like Gecko) KrdOS/1.0 Version/17.0 Safari/605.1.15");
   webkit_settings_set_hardware_acceleration_policy(
-    ws, WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS);
+    ws, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
 
   g_webview = WEBKIT_WEB_VIEW(webkit_web_view_new_with_settings(ws));
   g_object_unref(ws);
