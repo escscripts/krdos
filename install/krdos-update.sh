@@ -157,6 +157,9 @@ CHECKSUM_URL=$(echo "$RELEASE_JSON" \
 SETUP_URL=$(echo "$RELEASE_JSON" \
   | grep -oP '"browser_download_url":\s*"\K[^"]+' \
   | grep "setup\.sh$" | head -1)
+SELF_URL=$(echo "$RELEASE_JSON" \
+  | grep -oP '"browser_download_url":\s*"\K[^"]+' \
+  | grep "krdos-update\.sh$" | head -1)
 
 if [[ -z "$BUNDLE_URL" ]]; then
   die "No '${ASSET_NAME}' asset found in the latest release.\n  Has a GitHub Actions build been published yet?"
@@ -246,6 +249,19 @@ if [[ -n "$SETUP_URL" ]]; then
     -o "$TMP_DIR/setup.sh" \
     "$SETUP_URL" \
     || warn "Could not download setup.sh — skipping service config update."
+fi
+
+# Download krdos-update.sh itself alongside setup.sh so that when setup.sh runs
+# it finds the real script and installs it instead of falling back to the stub.
+# Without this, every update would overwrite the real krdos-update with a stub.
+if [[ -n "$SELF_URL" ]]; then
+  info "Downloading krdos-update.sh (self-update)..."
+  curl -fsSL --max-time 60 \
+    "${CURL_AUTH[@]}" \
+    -H "Accept: application/octet-stream" \
+    -o "$TMP_DIR/krdos-update.sh" \
+    "$SELF_URL" \
+    || warn "Could not download krdos-update.sh — setup.sh will install a stub."
 fi
 
 # ── Extract ───────────────────────────────────────────────────────────────────
