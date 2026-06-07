@@ -21,6 +21,7 @@ class _SoftwareUpdateScreenState extends State<SoftwareUpdateScreen> {
   bool _showLog = false;
   String _log = '';
   Timer? _logTimer;
+  final _logNotifier = ValueNotifier<String>('');
 
   @override
   void initState() {
@@ -33,6 +34,7 @@ class _SoftwareUpdateScreenState extends State<SoftwareUpdateScreen> {
   void dispose() {
     _repoCtrl.dispose();
     _logTimer?.cancel();
+    _logNotifier.dispose();
     super.dispose();
   }
 
@@ -40,7 +42,10 @@ class _SoftwareUpdateScreenState extends State<SoftwareUpdateScreen> {
     _logTimer?.cancel();
     _logTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
       final l = await SystemBridge.updateLog();
-      if (mounted) setState(() => _log = l);
+      if (mounted) {
+        setState(() => _log = l);
+        _logNotifier.value = l;
+      }
     });
   }
 
@@ -155,6 +160,7 @@ class _SoftwareUpdateScreenState extends State<SoftwareUpdateScreen> {
   }
 
   void _showRestartOverlay(UpdateState us) {
+    _logNotifier.value = 'Starting update…\n';
     setState(() {
       _showLog = true;
       _log = 'Starting update…\n';
@@ -163,13 +169,14 @@ class _SoftwareUpdateScreenState extends State<SoftwareUpdateScreen> {
 
     us.applyUpdate();
 
-    // Show full-screen overlay
+    // Show full-screen overlay with live log so user can see progress
     showDialog<void>(
       context: context,
       barrierDismissible: false,
       barrierColor: Colors.black87,
       builder: (_) => _RestartOverlay(
         releaseName: us.updateInfo?.releaseName ?? 'update',
+        logNotifier: _logNotifier,
       ),
     );
   }
@@ -468,6 +475,51 @@ class _SoftwareUpdateScreenState extends State<SoftwareUpdateScreen> {
                 ],
               ]),
             ).animate().fadeIn(duration: 200.ms, delay: 240.ms),
+
+            const SizedBox(height: 12),
+
+            // ── Token status row ──────────────────────────────────────────
+            _Card(
+              child: Row(children: [
+                Icon(
+                  us.hasToken
+                      ? Icons.lock_rounded
+                      : Icons.lock_open_rounded,
+                  size: 16,
+                  color: us.hasToken
+                      ? const Color(0xFF4CAF50)
+                      : AppTheme.textSecondary,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Private Repository Access',
+                          style: TextStyle(
+                              color: AppTheme.textPrimary,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 3),
+                      Text(
+                        us.hasToken
+                            ? 'GitHub token configured in /etc/krdos/update.conf ✓'
+                            : 'No token — only public repos work. '
+                              'To use a private repo, run:\n'
+                              '  sudo nano /etc/krdos/update.conf\n'
+                              'Add: GITHUB_TOKEN=ghp_your_token',
+                        style: TextStyle(
+                            color: us.hasToken
+                                ? const Color(0xFF4CAF50)
+                                : AppTheme.textSecondary,
+                            fontSize: 11,
+                            height: 1.45),
+                      ),
+                    ],
+                  ),
+                ),
+              ]),
+            ).animate().fadeIn(duration: 200.ms, delay: 260.ms),
 
             const SizedBox(height: 32),
           ],
@@ -886,7 +938,8 @@ class _PrefRow extends StatelessWidget {
 // ── Restart overlay ───────────────────────────────────────────────────────────
 class _RestartOverlay extends StatefulWidget {
   final String releaseName;
-  const _RestartOverlay({required this.releaseName});
+  final ValueNotifier<String> logNotifier;
+  const _RestartOverlay({required this.releaseName, required this.logNotifier});
 
   @override
   State<_RestartOverlay> createState() => _RestartOverlayState();
@@ -951,14 +1004,41 @@ class _RestartOverlayState extends State<_RestartOverlay>
             ),
           ),
           const SizedBox(height: 20),
-          Text('Downloading & installing…',
-              style: TextStyle(
-                  color: AppTheme.textSecondary, fontSize: 13)),
-          const SizedBox(height: 8),
+          // Live log output so user knows what's happening
+          SizedBox(
+            width: 360,
+            height: 160,
+            child: Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0D1117),
+                border: Border.all(color: AppTheme.border),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: ValueListenableBuilder<String>(
+                valueListenable: widget.logNotifier,
+                builder: (_, log, __) {
+                  final display = log.isEmpty ? 'Waiting for update output…' : log;
+                  return SingleChildScrollView(
+                    reverse: true,
+                    child: Text(
+                      display,
+                      style: TextStyle(
+                          color: AppTheme.textPrimary,
+                          fontSize: 10,
+                          fontFamily: 'monospace',
+                          height: 1.4),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
           Text('KrdOS will restart automatically',
               style: TextStyle(
                   color: AppTheme.textSecondary, fontSize: 12)),
-          const SizedBox(height: 40),
+          const SizedBox(height: 16),
           Container(
             padding:
                 const EdgeInsets.symmetric(horizontal: 16, vertical: 8),

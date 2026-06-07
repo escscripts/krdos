@@ -78,19 +78,35 @@ class _MonitorsSettingsScreenState extends State<MonitorsSettingsScreen> {
 
   Future<void> _apply() async {
     setState(() { _applying = true; _statusMsg = null; });
-    bool ok = true;
+
+    // Determine the primary output name (first connected primary, or first connected)
+    final primary = _monitors.firstWhere(
+      (m) => m.connected && m.primary,
+      orElse: () => _monitors.firstWhere(
+        (m) => m.connected,
+        orElse: () => _monitors.first,
+      ),
+    ).output;
+
+    // Build outputs map for set_arrangement
+    final Map<String, Map<String, dynamic>> outputs = {};
     for (final m in _monitors) {
       if (!m.connected) continue;
-      final res = await SystemBridge.setMonitorResolution(
-        output: m.output,
-        resolution: m.resolution,
-        refreshRate: m.refreshRate,
-      );
-      if (!res) ok = false;
-      if (!m.enabled) {
-        await SystemBridge.setMonitorEnabled(output: m.output, enabled: false);
-      }
+      outputs[m.output] = {
+        'enabled': m.enabled,
+        'mode':   m.resolution,
+        'rate':   m.refreshRate.toDouble(),
+        'x':      m.x.toInt(),
+        'y':      m.y.toInt(),
+      };
     }
+
+    // Use set_arrangement which handles primary, positions, resolutions all in one xrandr call
+    final ok = await SystemBridge.setMonitorArrangement(
+      primary: primary,
+      outputs: outputs,
+    );
+
     setState(() {
       _applying = false;
       _statusMsg = ok ? 'Settings applied.' : 'Some settings could not be applied.';

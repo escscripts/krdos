@@ -43,3 +43,8 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# KrdOS secure config — NEVER commit token files
+update.conf
+**/update.conf
+*.conf

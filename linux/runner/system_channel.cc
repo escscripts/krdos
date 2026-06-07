@@ -96,13 +96,17 @@ static void on_method_call(FlMethodChannel* /*channel*/,
 
   // ── Bluetooth ─────────────────────────────────────────────────────────────
   } else if (strcmp(method, "bluetooth.enable") == 0) {
-    bool ok = shell_ok("sudo rfkill unblock bluetooth");
-    shell_ok("bluetoothctl power on");
+    // Ensure the bluetooth service is running (needed if it wasn't started at boot)
+    shell_ok("systemctl start bluetooth 2>/dev/null");
+    // rfkill unblock — running as root so no sudo needed
+    shell_ok("rfkill unblock bluetooth 2>/dev/null");
+    shell_ok("rfkill unblock all 2>/dev/null");
+    bool ok = shell_ok("bluetoothctl power on 2>/dev/null");
     resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(ok)));
 
   } else if (strcmp(method, "bluetooth.disable") == 0) {
-    shell_ok("bluetoothctl power off");
-    bool ok = shell_ok("sudo rfkill block bluetooth");
+    shell_ok("bluetoothctl power off 2>/dev/null");
+    bool ok = shell_ok("rfkill block bluetooth 2>/dev/null");
     resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(ok)));
 
   // ── Microphone ────────────────────────────────────────────────────────────
@@ -294,11 +298,27 @@ static void on_method_call(FlMethodChannel* /*channel*/,
       if (c && fl_value_get_type(c) == FL_VALUE_TYPE_STRING) command = fl_value_get_string(c);
       if (d && fl_value_get_type(d) == FL_VALUE_TYPE_STRING) cwd     = fl_value_get_string(d);
     }
-    char full[16384];
+    // Wrap command with a 300-second hard timeout (-k 5 sends SIGKILL 5s after SIGTERM)
+    // to prevent long-running processes (apt-get, pip, etc.) from freezing the UI thread.
+    char full[16384 + 64];
     snprintf(full, sizeof(full),
-      "cd %s 2>/dev/null || cd /home/admin; %s", cwd, command);
+      "cd %s 2>/dev/null || cd /home/admin; timeout -k 5 300 %s", cwd, command);
     char* out = shell_capture(full);
-    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_string(out)));
+    // Cap output at 512 KB to prevent OOM from verbose commands (e.g. make, pip install)
+    const size_t MAX_TERM_OUTPUT = 512UL * 1024UL;
+    size_t out_len = out ? strlen(out) : 0;
+    if (out && out_len > MAX_TERM_OUTPUT) {
+      const char* trunc_msg = "\n\n... [output truncated — exceeded 512 KB] ...\n";
+      size_t msg_len = strlen(trunc_msg);
+      char* newbuf = (char*)realloc(out, MAX_TERM_OUTPUT + msg_len + 1);
+      if (newbuf) {
+        out = newbuf;
+        memcpy(out + MAX_TERM_OUTPUT, trunc_msg, msg_len + 1);
+      } else {
+        out[MAX_TERM_OUTPUT] = '\0';
+      }
+    }
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_string(out ? out : "")));
     free(out);
 
   // ── Power management ──────────────────────────────────────────────────────
@@ -1014,7 +1034,6 @@ static void on_method_call(FlMethodChannel* /*channel*/,
       strncpy(copy, line, sizeof(copy)-1);
       copy[sizeof(copy)-1] = '\0';
       // Find last three ':' separators
-      char* p = copy;
       int colons = 0;
       for (char* q = copy; *q; q++) if (*q == ':') colons++;
       if (colons < 3) { line = strtok(nullptr, "\n"); continue; }
@@ -1427,18 +1446,30 @@ static void on_method_call(FlMethodChannel* /*channel*/,
       resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(ok)));
     }
 
-  // ── Browser: launch Firefox ───────────────────────────────────────────────
+  // ── Browser: launch best available browser ───────────────────────────────
   } else if (strcmp(method, "browser.open") == 0) {
     const char* url = "about:blank";
     if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
       FlValue* v = fl_value_lookup_string(args, "url");
       if (v) url = fl_value_get_string(v);
     }
-    char cmd[2048];
-    // Try firefox-esr, firefox, chromium in order; run detached
+    // Build a shell snippet that:
+    //  1. Preserves DISPLAY (falls back to :0 if unset — common in kiosk envs)
+    //  2. Tries every common browser binary name in priority order
+    //  3. Falls through to xdg-open as a last resort
+    //  4. Runs detached so Flutter is not blocked
+    char cmd[4096];
     snprintf(cmd, sizeof(cmd),
-      "DISPLAY=:0 (firefox-esr \"%s\" || firefox \"%s\" || chromium-browser \"%s\") &",
-      url, url, url);
+      "DISPLAY=\"${DISPLAY:-:0}\" XAUTHORITY=\"${XAUTHORITY:-/root/.Xauthority}\" "
+      "(chromium \"%s\" 2>/dev/null"
+      " || chromium-browser \"%s\" 2>/dev/null"
+      " || google-chrome \"%s\" 2>/dev/null"
+      " || google-chrome-stable \"%s\" 2>/dev/null"
+      " || firefox \"%s\" 2>/dev/null"
+      " || firefox-esr \"%s\" 2>/dev/null"
+      " || xdg-open \"%s\" 2>/dev/null"
+      ") >/dev/null 2>&1 &",
+      url, url, url, url, url, url, url);
     shell_ok(cmd);
     resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(true)));
 
@@ -1475,20 +1506,69 @@ static void on_method_call(FlMethodChannel* /*channel*/,
     free(ver);
     resp = FL_METHOD_RESPONSE(fl_method_success_response_new(s));
 
+  // ── Update: read config (repo + whether a token exists) ──────────────────
+  // Token value is NEVER sent to Dart — only a boolean "has_token" is exposed.
+  } else if (strcmp(method, "update.get_config") == 0) {
+    char* conf_repo = shell_capture(
+      "grep -m1 '^GITHUB_REPO=' /etc/krdos/update.conf 2>/dev/null "
+      "| cut -d= -f2- | tr -d '[:space:]'");
+    char* conf_tok = shell_capture(
+      "grep -m1 '^GITHUB_TOKEN=' /etc/krdos/update.conf 2>/dev/null "
+      "| cut -d= -f2- | tr -d '[:space:]'");
+    if (!conf_repo) conf_repo = strdup("");
+    if (!conf_tok)  conf_tok  = strdup("");
+    bool has_token = strlen(conf_tok) > 0;
+    g_autoptr(FlValue) map = fl_value_new_map();
+    fl_value_set_string_take(map, "repo",      fl_value_new_string(conf_repo));
+    fl_value_set_string_take(map, "has_token", fl_value_new_bool(has_token));
+    free(conf_repo); free(conf_tok);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(map));
+
   // ── Update: hit GitHub API and return raw JSON ─────────────────────────────
+  // Reads token from /etc/krdos/update.conf; token never leaves C++.
   } else if (strcmp(method, "update.check") == 0) {
     const char* repo = "";
+    char conf_repo_buf[256] = "";
     if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
       FlValue* r = fl_value_lookup_string(args, "repo");
       if (r && fl_value_get_type(r) == FL_VALUE_TYPE_STRING)
         repo = fl_value_get_string(r);
     }
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd),
-      "curl -fsSL --max-time 10 "
-      "-H 'Accept: application/vnd.github+json' "
-      "https://api.github.com/repos/%s/releases/latest 2>/dev/null",
-      repo);
+    // Fall back to conf file if caller did not supply repo
+    if (strlen(repo) == 0) {
+      char* cr = shell_capture(
+        "grep -m1 '^GITHUB_REPO=' /etc/krdos/update.conf 2>/dev/null "
+        "| cut -d= -f2- | tr -d '[:space:]'");
+      if (cr && strlen(cr) > 0) {
+        strncpy(conf_repo_buf, cr, sizeof(conf_repo_buf) - 1);
+        repo = conf_repo_buf;
+      }
+      free(cr);
+    }
+    // Read token — only used here to build the curl header, never returned.
+    char* token = shell_capture(
+      "grep -m1 '^GITHUB_TOKEN=' /etc/krdos/update.conf 2>/dev/null "
+      "| cut -d= -f2- | tr -d '[:space:]'");
+    if (!token) token = strdup("");
+    char cmd[2048];
+    if (strlen(token) > 0) {
+      // GitHub PATs are [A-Za-z0-9_-] only — safe to embed directly.
+      snprintf(cmd, sizeof(cmd),
+        "curl -fsSL --max-time 10 "
+        "-H 'Accept: application/vnd.github+json' "
+        "-H 'X-GitHub-Api-Version: 2022-11-28' "
+        "-H 'Authorization: Bearer %s' "
+        "https://api.github.com/repos/%s/releases/latest 2>/dev/null",
+        token, repo);
+    } else {
+      snprintf(cmd, sizeof(cmd),
+        "curl -fsSL --max-time 10 "
+        "-H 'Accept: application/vnd.github+json' "
+        "-H 'X-GitHub-Api-Version: 2022-11-28' "
+        "https://api.github.com/repos/%s/releases/latest 2>/dev/null",
+        repo);
+    }
+    free(token);
     char* json = shell_capture(cmd);
     if (!json) json = strdup("{}");
     g_autoptr(FlValue) s = fl_value_new_string(json);

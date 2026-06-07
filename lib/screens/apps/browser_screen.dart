@@ -10,6 +10,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../core/browser/browser_engine.dart';
 import '../../core/browser/browser_prefs.dart';
 import '../../core/browser/tor_launcher.dart';
+import '../../core/platform/system_bridge.dart';
 import '../../theme/app_theme.dart';
 
 // ---------------------------------------------------------------------------
@@ -136,6 +137,18 @@ class _BrowserScreenState extends State<BrowserScreen>
   Future<void> _launchUrl(String rawUrl) async {
     final url = _normalise(rawUrl);
     if (_isBlankOrInternal(url)) return;
+
+    // ── Platform-channel path (Linux / KrdOS) ──────────────────────────────
+    // SystemBridge.browserOpen() runs a shell command with DISPLAY set and
+    // tries every known browser binary (chromium, chromium-browser,
+    // google-chrome, firefox, firefox-esr, xdg-open). This is the most
+    // reliable path on KrdOS where xdg-mime may not have a default set.
+    try {
+      await SystemBridge.browserOpen(url: url);
+      return;
+    } catch (_) {}
+
+    // ── Fallback: url_launcher ─────────────────────────────────────────────
     final uri = Uri.parse(url);
     bool launched = false;
     try {
@@ -143,16 +156,21 @@ class _BrowserScreenState extends State<BrowserScreen>
         launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
       }
     } catch (_) {}
+
+    // ── Last resort: xdg-open with DISPLAY forced ──────────────────────────
     if (!launched && !kIsWeb) {
       try {
         if (Platform.isLinux) {
-          await Process.run('xdg-open', [url]);
+          final env = Map<String, String>.from(Platform.environment);
+          env['DISPLAY'] ??= ':0';
+          await Process.run('xdg-open', [url], environment: env);
           launched = true;
         }
       } catch (_) {}
     }
+
     if (!launched && mounted) {
-      _showSnack('Could not open browser. Install Firefox or Chromium.',
+      _showSnack('Could not open browser. Install Chromium: sudo apt install chromium',
           isError: true);
     }
   }

@@ -1986,8 +1986,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         top: pos.dy,
         width: size.width,
         height: size.height,
-        child: GestureDetector(
-          onTap: () => setState(() => _bringToFront(w.id)),
+        child: Listener(
+          onPointerDown: (_) => setState(() => _bringToFront(w.id)),
           child: _OsWindow(
             windowId: w.id,
             window: w,
