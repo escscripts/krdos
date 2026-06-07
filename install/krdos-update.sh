@@ -311,6 +311,25 @@ fi
 
 ok "Bundle installed."
 
+# ── Ensure runtime dependencies are present ───────────────────────────────────
+# The krdos binary links against WebKit2GTK for the embedded browser.
+# On existing installs that pre-date this dependency, apt-get installs it now.
+WEBKIT_PKGS=(libwebkit2gtk-4.0-0 libjavascriptcoregtk-4.0-0)
+MISSING_PKGS=()
+for pkg in "${WEBKIT_PKGS[@]}"; do
+  dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" \
+    || MISSING_PKGS+=("$pkg")
+done
+if [[ ${#MISSING_PKGS[@]} -gt 0 ]]; then
+  info "Installing missing runtime dependencies: ${MISSING_PKGS[*]}"
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    "${MISSING_PKGS[@]}" 2>&1 | sed 's/^/    /' \
+    && ok "Runtime dependencies installed." \
+    || warn "apt-get failed — the OS may crash on next launch if libs are missing."
+else
+  ok "Runtime dependencies already present."
+fi
+
 # Run setup.sh from release (updates systemd services, scripts, conf files).
 # This also regenerates /usr/local/bin/krdos-ui pointing to $INSTALL_DIR.
 if [[ -f "$TMP_DIR/setup.sh" ]]; then

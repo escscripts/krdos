@@ -251,6 +251,7 @@ DEBIAN_FRONTEND=noninteractive cx \
      libwayland-client0 libwayland-server0 libwayland-egl1 \
      libgl1-mesa-dri \
      libglib2.0-0 libgtk-3-0 \
+     libwebkit2gtk-4.0-0 libjavascriptcoregtk-4.0-0 \
      alsa-utils \
      curl ca-certificates \
      iproute2 iputils-ping \
