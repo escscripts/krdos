@@ -7,36 +7,40 @@
 #include <stdlib.h>
 #include <string.h>
 
-// WebKit2GTK — browser in a separate undecorated GtkWindow
+// WebKit2GTK — embedded via XReparentWindow into Flutter's X11 window
 #include <webkit2/webkit2.h>
+#include <gdk/gdkx.h>
+#include <X11/Xlib.h>
 
 static const char* kChannelName = "krdos/system";
 
 // ---------------------------------------------------------------------------
-// Embedded WebKit2GTK browser — separate GtkWindow approach
+// Embedded WebKit2GTK browser — XReparentWindow approach
 //
 // WHY NOT GtkOverlay:
-//   Flutter renders via EGL/OpenGL to the GtkWindow surface.  That GL draw
-//   happens AFTER GTK's widget compositor, so Flutter's content painted over
-//   any GtkOverlay child every frame → black/glitchy screen.
+//   Flutter's EGL/OpenGL draw overwrites GTK's compositor output every frame.
 //
-// THIS APPROACH:
-//   WebKitWebView lives in its own undecorated, borderless GtkWindow that is
-//   transient to the Flutter window.  The WebKit GtkWindow is positioned at
-//   the exact screen coordinates of the Flutter content area and raised to the
-//   top of the X11 stacking order so it appears in front of Flutter.
-//   Flutter's tab strip / nav bar sit ABOVE the WebKit window's y-origin, so
-//   they are never covered.
+// WHY NOT separate top-level GtkWindow:
+//   Z-order fights: without a WM, Flutter's top-level window can end up on
+//   top of the WebKit window with no reliable way to keep WebKit above it.
 //
-//   No XReparentWindow, no GtkOverlay, no WM hacks — just two independent
-//   top-level windows where the browser window overlaps the content portion.
+// THIS APPROACH (XReparentWindow):
+//   We realize the WebKitWebView GtkWindow WITHOUT showing it (so GTK never
+//   maps it as a top-level window), then use raw Xlib to:
+//     1. Reparent WebKit's X11 window into Flutter's X11 window.
+//     2. Position it at the content-area coordinates (Flutter-window-local).
+//     3. Map it via XMapWindow.
+//   Because it is an X11 CHILD of Flutter's window, it is always composited
+//   on top of the parent's pixel content — no Z-order fight, no timer needed.
+//   Flutter's tab strip / URL bar live above y=content_y so they are never
+//   obscured.
 // ---------------------------------------------------------------------------
 
 static FlPluginRegistrar* g_reg     = nullptr;
-static GtkWidget*         g_webwin  = nullptr;  // Undecorated GtkWindow for WebKit
+static GtkWidget*         g_webwin  = nullptr;  // Unrealized-until-first-use GtkWindow
 static WebKitWebView*     g_webview = nullptr;
-static int  g_web_x = 0, g_web_y = 0, g_web_w = 800, g_web_h = 600;
-static guint g_raise_timer = 0;   // Periodic raise — keeps WebKit above Flutter GL
+static bool               g_reparented = false; // Did we already XReparentWindow?
+static int g_web_x = 0, g_web_y = 0, g_web_w = 800, g_web_h = 600;
 
 static GtkWindow* main_gtk_window() {
   if (!g_reg) return nullptr;
@@ -46,53 +50,46 @@ static GtkWindow* main_gtk_window() {
   return GTK_IS_WINDOW(top) ? GTK_WINDOW(top) : nullptr;
 }
 
-// Convert Flutter window-local coords to screen coords.
-// Uses gdk_window_get_origin() (client-area origin) instead of
-// gtk_window_get_position() which returns wrong values for fullscreen windows.
-static void fl_to_screen(int fl_x, int fl_y, int* sc_x, int* sc_y) {
-  *sc_x = fl_x;
-  *sc_y = fl_y;
-  GtkWindow* win = main_gtk_window();
-  if (!win) return;
-  GdkWindow* gdk_win = gtk_widget_get_window(GTK_WIDGET(win));
-  if (!gdk_win) return;
-  gint wx = 0, wy = 0;
-  gdk_window_get_origin(gdk_win, &wx, &wy);
-  *sc_x = wx + fl_x;
-  *sc_y = wy + fl_y;
+// Return the raw Xlib Display* from the default GDK display.
+static Display* x_display() {
+  return gdk_x11_display_get_xdisplay(gdk_display_get_default());
 }
 
-// Periodic GLib callback: re-raise the WebKit window every 100ms so it stays
-// on top of Flutter's GL surface even if Flutter raises its own window.
-static gboolean raise_webkit_cb(gpointer /*unused*/) {
-  if (!g_webwin || !gtk_widget_get_visible(g_webwin)) {
-    g_raise_timer = 0;
-    return G_SOURCE_REMOVE;   // Stop the timer when hidden
-  }
+// Return the X11 window ID of the Flutter GtkWindow.
+static Window flutter_xwindow() {
+  GtkWindow* w = main_gtk_window();
+  if (!w) return None;
+  GdkWindow* gdk_win = gtk_widget_get_window(GTK_WIDGET(w));
+  if (!gdk_win) return None;
+  return gdk_x11_window_get_xid(gdk_win);
+}
+
+// Return the X11 window ID of our WebKit GtkWindow (after realization).
+static Window webkit_xwindow() {
+  if (!g_webwin) return None;
   GdkWindow* gdk_win = gtk_widget_get_window(g_webwin);
-  if (gdk_win) gdk_window_raise(gdk_win);
-  return G_SOURCE_CONTINUE;
+  if (!gdk_win) return None;
+  return gdk_x11_window_get_xid(gdk_win);
 }
 
-// Create the WebKitWebView inside an undecorated GtkWindow (lazy, once).
+// Signal handler: return TRUE to suppress WebKit's own fullscreen attempts.
+static gboolean webview_block_fullscreen(WebKitWebView* /*wv*/, gpointer /*ud*/) {
+  return TRUE;
+}
+
+// Create the WebKitWebView inside a GtkWindow (lazy, once).
+// We realize but do NOT map the window — XMapWindow handles that.
 static void webwin_ensure_created() {
   if (g_webwin) return;
 
+  // Undecorated, borderless container for WebKit.
   g_webwin = gtk_window_new(GTK_WINDOW_TOPLEVEL);
   gtk_window_set_decorated(GTK_WINDOW(g_webwin), FALSE);
-  // NOTE: do NOT call gtk_window_set_resizable(FALSE) — it silently blocks
-  //       gtk_window_resize() so the window would never match the content area.
   gtk_window_set_skip_taskbar_hint(GTK_WINDOW(g_webwin), TRUE);
   gtk_window_set_skip_pager_hint(GTK_WINDOW(g_webwin), TRUE);
-  gtk_window_set_focus_on_map(GTK_WINDOW(g_webwin), FALSE);
   gtk_window_set_default_size(GTK_WINDOW(g_webwin), 800, 600);
 
-  // Transient: follows the Flutter window between workspaces / minimise.
-  GtkWindow* main_win = main_gtk_window();
-  if (main_win)
-    gtk_window_set_transient_for(GTK_WINDOW(g_webwin), main_win);
-
-  // Build WebKit settings
+  // Build WebKit settings — software rendering, JS enabled.
   WebKitSettings* ws = webkit_settings_new();
   webkit_settings_set_enable_javascript(ws, TRUE);
   webkit_settings_set_enable_webgl(ws, FALSE);
@@ -107,12 +104,23 @@ static void webwin_ensure_created() {
   g_webview = WEBKIT_WEB_VIEW(webkit_web_view_new_with_settings(ws));
   g_object_unref(ws);
 
+  // Opaque white background so the view is always visible even before load.
+  GdkRGBA white = {1.0, 1.0, 1.0, 1.0};
+  webkit_web_view_set_background_color(g_webview, &white);
+
+  // Block WebKit's own fullscreen requests — we manage geometry ourselves.
+  g_signal_connect(g_webview, "enter-fullscreen",
+    G_CALLBACK(webview_block_fullscreen), nullptr);
+
   gtk_container_add(GTK_CONTAINER(g_webwin), GTK_WIDGET(g_webview));
   gtk_widget_show(GTK_WIDGET(g_webview));
-  // g_webwin itself stays hidden until the first webwin_show() call.
+
+  // Realize (creates the X11 window) but do NOT map (do NOT call gtk_widget_show
+  // on g_webwin — we use XMapWindow so it maps as a child of Flutter's window).
+  gtk_widget_realize(g_webwin);
 }
 
-// Show the WebKit window over the Flutter content area.
+// Show/navigate: embed WebKit into Flutter's X11 window and map it.
 static void webwin_show(int x, int y, int w, int h) {
   if (w < 10) w = 800;
   if (h < 10) h = 600;
@@ -121,50 +129,53 @@ static void webwin_show(int x, int y, int w, int h) {
 
   g_web_x = x; g_web_y = y; g_web_w = w; g_web_h = h;
 
-  // Keep-above EWMH hint (WMs that honour it will keep us on top)
-  gtk_window_set_keep_above(GTK_WINDOW(g_webwin), TRUE);
+  Display* dpy   = x_display();
+  Window   fl_xw = flutter_xwindow();
+  Window   wk_xw = webkit_xwindow();
+  if (!dpy || !fl_xw || !wk_xw) return;
 
-  // Show first so the window is realized and has a GdkWindow
-  gtk_widget_show(g_webwin);
-  gtk_widget_grab_focus(GTK_WIDGET(g_webview));
-
-  // Now atomically move+resize via GDK (bypass GTK WM geometry negotiations)
-  GdkWindow* gdk_win = gtk_widget_get_window(g_webwin);
-  if (gdk_win) {
-    int sc_x, sc_y;
-    fl_to_screen(x, y, &sc_x, &sc_y);
-    gdk_window_move_resize(gdk_win, sc_x, sc_y, w, h);
-    gdk_window_raise(gdk_win);
+  if (!g_reparented) {
+    // First show: reparent into Flutter's window at content-area position.
+    // Coordinates are Flutter-window-local (same as localToGlobal in Dart).
+    XReparentWindow(dpy, wk_xw, fl_xw, x, y);
+    g_reparented = true;
+  } else {
+    // Subsequent shows: just move back to the correct position.
+    XMoveWindow(dpy, wk_xw, x, y);
   }
 
-  // Start the periodic raise timer (100 ms) if it isn't already running
-  if (g_raise_timer == 0)
-    g_raise_timer = g_timeout_add(100, raise_webkit_cb, nullptr);
+  XResizeWindow(dpy, wk_xw, (unsigned)w, (unsigned)h);
+  XMapWindow(dpy, wk_xw);       // Map as child — always above parent GL content
+  XRaiseWindow(dpy, wk_xw);
+  XFlush(dpy);
+
+  gtk_widget_grab_focus(GTK_WIDGET(g_webview));
 }
 
-// Move/resize an already-visible WebKit window (panel open, window resize…).
+// Reposition/resize the already-visible embedded WebKit child window.
 static void webwin_reposition(int x, int y, int w, int h) {
-  if (!g_webwin || !gtk_widget_get_visible(g_webwin)) return;
+  if (!g_webwin || !g_reparented) return;
   if (w < 10) w = 800;
   if (h < 10) h = 600;
   g_web_x = x; g_web_y = y; g_web_w = w; g_web_h = h;
 
-  GdkWindow* gdk_win = gtk_widget_get_window(g_webwin);
-  if (gdk_win) {
-    int sc_x, sc_y;
-    fl_to_screen(x, y, &sc_x, &sc_y);
-    gdk_window_move_resize(gdk_win, sc_x, sc_y, w, h);
-    gdk_window_raise(gdk_win);
-  }
+  Display* dpy   = x_display();
+  Window   wk_xw = webkit_xwindow();
+  if (!dpy || !wk_xw) return;
+
+  XMoveResizeWindow(dpy, wk_xw, x, y, (unsigned)w, (unsigned)h);
+  XFlush(dpy);
 }
 
-// Hide the WebKit window (kept in memory for fast re-show).
+// Unmap (hide) the embedded WebKit child window.
 static void webwin_hide() {
-  if (g_webwin) gtk_widget_hide(g_webwin);
-  // Stop the raise timer — no point raising a hidden window
-  if (g_raise_timer) {
-    g_source_remove(g_raise_timer);
-    g_raise_timer = 0;
+  if (!g_webwin || !g_reparented) return;
+
+  Display* dpy   = x_display();
+  Window   wk_xw = webkit_xwindow();
+  if (dpy && wk_xw) {
+    XUnmapWindow(dpy, wk_xw);
+    XFlush(dpy);
   }
 }
 

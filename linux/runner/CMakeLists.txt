@@ -23,8 +23,10 @@ add_definitions(-DAPPLICATION_ID="${APPLICATION_ID}")
 # Add dependency libraries. Add any application-specific dependencies here.
 target_link_libraries(${BINARY_NAME} PRIVATE flutter)
 target_link_libraries(${BINARY_NAME} PRIVATE PkgConfig::GTK)
-# WebKit2GTK for the embedded browser (system_channel.cc creates a native
-# WebKitWebView in a borderless transient GTK window; no Flutter plugin needed).
+# WebKit2GTK for the embedded browser.
 target_link_libraries(${BINARY_NAME} PRIVATE PkgConfig::WEBKIT)
+# Xlib — used directly for XReparentWindow/XMapWindow/XMoveResizeWindow to
+# embed the WebKit X11 window as a child of Flutter's X11 window.
+target_link_libraries(${BINARY_NAME} PRIVATE X11)
 
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
