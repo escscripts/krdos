@@ -211,54 +211,56 @@ class _BrowserScreenState extends State<BrowserScreen>
     setState(() {});
 
     if (!_isBlankOrInternal(url)) {
-      // Rebuild first so the content-area Container is in the tree, then
-      // measure its absolute screen rect and show the WebKit window there.
+      // Set state so LayoutBuilder in _buildUrlViewPanel rebuilds and
+      // schedules _onContentAreaLayout (which calls browserWebViewShow).
+      _pendingNavigateUrl = url;
       setState(() {});
-      WidgetsBinding.instance.addPostFrameCallback((_) async {
-        if (!mounted) return;
-        _measureContentArea();
-        await SystemBridge.browserWebViewShow(
-            url, _webX, _webY, _webW, _webH);
-        _startPoller();
-      });
+      _startPoller();
     } else {
-      // Blank / new-tab — hide the native window so the Flutter UI shows.
+      _pendingNavigateUrl = null;
       await SystemBridge.browserWebViewHide();
       _infoPoller?.cancel();
     }
   }
 
-  /// Measure the content-area widget's absolute screen position using its
-  /// GlobalKey, then store in _webX/Y/W/H (logical pixels).
-  void _measureContentArea() {
-    final ctx = _contentAreaKey.currentContext;
-    if (ctx == null) return;
-    final box = ctx.findRenderObject() as RenderBox?;
-    if (box == null || !box.hasSize) return;
-    final offset = box.localToGlobal(Offset.zero);
-    final size   = box.size;
-    _webX = offset.dx.round();
-    _webY = offset.dy.round();
-    _webW = size.width.round().clamp(100, 8192);
-    _webH = size.height.round().clamp(100, 8192);
+  // URL waiting to be shown once the content area has been laid out.
+  String? _pendingNavigateUrl;
+
+  /// Called by LayoutBuilder every time the content area is built/resized.
+  /// Uses constraints (reliable size) + localToGlobal (accurate position).
+  void _onContentAreaLayout(BoxConstraints constraints) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      // Position: use localToGlobal — accurate after layout phase completes.
+      final box = _contentAreaKey.currentContext?.findRenderObject() as RenderBox?;
+      if (box == null || !box.hasSize) return;
+      final pos = box.localToGlobal(Offset.zero);
+      final x = pos.dx.round();
+      final y = pos.dy.round();
+      // Size: use LayoutBuilder constraints — Stack/SizedBox.expand is reliable.
+      final w = constraints.maxWidth.round().clamp(1, 8192);
+      final h = constraints.maxHeight.round().clamp(1, 8192);
+
+      final url = _pendingNavigateUrl;
+      if (url != null && url.isNotEmpty) {
+        // First show for this navigation — position + navigate.
+        _webX = x; _webY = y; _webW = w; _webH = h;
+        _pendingNavigateUrl = null;
+        await SystemBridge.browserWebViewShow(url, x, y, w, h);
+      } else if (x != _webX || y != _webY || w != _webW || h != _webH) {
+        // Window moved or resized — reposition without navigating.
+        _webX = x; _webY = y; _webW = w; _webH = h;
+        SystemBridge.browserWebViewReposition(x, y, w, h);
+      }
+    });
   }
 
   /// Start (or restart) the 500 ms polling timer that syncs URL / title /
   /// loading state from the native WebKit window back into Flutter.
-  /// Also repositions the WebKit window if the browser app window has moved.
   void _startPoller() {
     _infoPoller?.cancel();
     _infoPoller = Timer.periodic(const Duration(milliseconds: 500), (_) async {
       if (!mounted) { _infoPoller?.cancel(); return; }
-
-      // Check if the content area has moved (user dragged the browser window).
-      final prevX = _webX; final prevY = _webY;
-      final prevW = _webW; final prevH = _webH;
-      _measureContentArea();
-      if (_webX != prevX || _webY != prevY ||
-          _webW != prevW || _webH != prevH) {
-        SystemBridge.browserWebViewReposition(_webX, _webY, _webW, _webH);
-      }
 
       final info = await SystemBridge.browserWebViewGetInfo();
       if (!mounted || info.isEmpty) return;
@@ -1468,27 +1470,31 @@ class _BrowserScreenState extends State<BrowserScreen>
     // A LayoutBuilder measures the content area each frame so _toolbarHeightPx
     // stays accurate even when the find bar / bookmarks bar is toggled.
     if (!_isBlankOrInternal(url)) {
-      // A keyed Container so _measureContentArea() can call
-      // RenderBox.localToGlobal on it to get the exact screen rect.
-      // The GTK WebKit window (override-redirect, borderless) is then
-      // positioned to cover exactly this area.
-      return Stack(
-        key: _contentAreaKey,
-        children: [
-          // Dark backdrop — the GTK WebKit window sits on top of this.
-          Container(color: const Color(0xFF0A0D12)),
-          if (loading)
-            Positioned(
-              top: 0, left: 0, right: 0,
-              child: LinearProgressIndicator(
-                value: _engine.activeTab?.progress,
-                backgroundColor: Colors.transparent,
-                valueColor: AlwaysStoppedAnimation(AppTheme.accent),
-                minHeight: 3,
-              ),
-            ),
-        ],
-      );
+      // LayoutBuilder gives the exact available size via constraints (reliable).
+      // SizedBox.expand + GlobalKey lets us read position via localToGlobal.
+      // Together they give us the accurate rect to pass to the GTK WebKit window.
+      return LayoutBuilder(builder: (ctx, constraints) {
+        _onContentAreaLayout(constraints);
+        return SizedBox.expand(
+          key: _contentAreaKey,
+          child: Stack(
+            children: [
+              // Dark backdrop visible while WebKit window positions itself.
+              Container(color: const Color(0xFF0A0D12)),
+              if (loading)
+                Positioned(
+                  top: 0, left: 0, right: 0,
+                  child: LinearProgressIndicator(
+                    value: _engine.activeTab?.progress,
+                    backgroundColor: Colors.transparent,
+                    valueColor: AlwaysStoppedAnimation(AppTheme.accent),
+                    minHeight: 3,
+                  ),
+                ),
+            ],
+          ),
+        );
+      });
     }
 
     final isHttps = url.startsWith('https://');
