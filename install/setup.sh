@@ -904,7 +904,7 @@ systemctl enable krdos-update.timer 2>/dev/null && ok "krdos-update timer enable
 # (it needs systemctl stop/start krdos-ui which requires root)
 if [[ -f /etc/sudoers.d/krdos ]]; then
   grep -q "krdos-update" /etc/sudoers.d/krdos || \
-    sed -i '/krdos-configure-displays.sh/a\  /usr/local/bin/krdos-update,' \
+    sed -i '/krdos-configure-displays.sh/a\  /usr/local/bin/krdos-update' \
       /etc/sudoers.d/krdos
 fi
 ok "krdos-update wired into sudoers"
