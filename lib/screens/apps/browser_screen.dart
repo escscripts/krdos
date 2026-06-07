@@ -49,7 +49,13 @@ class _BrowserScreenState extends State<BrowserScreen>
   Timer?  _infoPoller;
   bool    _nativeCanGoBack    = false;
   bool    _nativeCanGoForward = false;
-  int     _toolbarHeightPx    = 94;   // updated by LayoutBuilder each frame
+
+  // GlobalKey on the content-area Container so we can measure its exact
+  // screen position (via RenderBox.localToGlobal) and pass it to C++.
+  // This is the only correct way — the browser window can be anywhere on
+  // the desktop, so hardcoded x=0 or toolbar-height estimates are always wrong.
+  final GlobalKey _contentAreaKey = GlobalKey();
+  int _webX = 0, _webY = 94, _webW = 1280, _webH = 720;
 
   // URL bar
   final TextEditingController _urlCtrl = TextEditingController();
@@ -205,9 +211,16 @@ class _BrowserScreenState extends State<BrowserScreen>
     setState(() {});
 
     if (!_isBlankOrInternal(url)) {
-      // Show the native WebKit window below Flutter's URL bar, then navigate.
-      await SystemBridge.browserWebViewShow(url, _toolbarHeightPx);
-      _startPoller();
+      // Rebuild first so the content-area Container is in the tree, then
+      // measure its absolute screen rect and show the WebKit window there.
+      setState(() {});
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (!mounted) return;
+        _measureContentArea();
+        await SystemBridge.browserWebViewShow(
+            url, _webX, _webY, _webW, _webH);
+        _startPoller();
+      });
     } else {
       // Blank / new-tab — hide the native window so the Flutter UI shows.
       await SystemBridge.browserWebViewHide();
@@ -215,12 +228,38 @@ class _BrowserScreenState extends State<BrowserScreen>
     }
   }
 
+  /// Measure the content-area widget's absolute screen position using its
+  /// GlobalKey, then store in _webX/Y/W/H (logical pixels).
+  void _measureContentArea() {
+    final ctx = _contentAreaKey.currentContext;
+    if (ctx == null) return;
+    final box = ctx.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return;
+    final offset = box.localToGlobal(Offset.zero);
+    final size   = box.size;
+    _webX = offset.dx.round();
+    _webY = offset.dy.round();
+    _webW = size.width.round().clamp(100, 8192);
+    _webH = size.height.round().clamp(100, 8192);
+  }
+
   /// Start (or restart) the 500 ms polling timer that syncs URL / title /
   /// loading state from the native WebKit window back into Flutter.
+  /// Also repositions the WebKit window if the browser app window has moved.
   void _startPoller() {
     _infoPoller?.cancel();
     _infoPoller = Timer.periodic(const Duration(milliseconds: 500), (_) async {
       if (!mounted) { _infoPoller?.cancel(); return; }
+
+      // Check if the content area has moved (user dragged the browser window).
+      final prevX = _webX; final prevY = _webY;
+      final prevW = _webW; final prevH = _webH;
+      _measureContentArea();
+      if (_webX != prevX || _webY != prevY ||
+          _webW != prevW || _webH != prevH) {
+        SystemBridge.browserWebViewReposition(_webX, _webY, _webW, _webH);
+      }
+
       final info = await SystemBridge.browserWebViewGetInfo();
       if (!mounted || info.isEmpty) return;
       final url      = info['url']          as String? ?? '';
@@ -1429,29 +1468,27 @@ class _BrowserScreenState extends State<BrowserScreen>
     // A LayoutBuilder measures the content area each frame so _toolbarHeightPx
     // stays accurate even when the find bar / bookmarks bar is toggled.
     if (!_isBlankOrInternal(url)) {
-      return LayoutBuilder(builder: (ctx, constraints) {
-        // Screen height − content-area height = toolbar height in logical px.
-        final screenH = MediaQuery.of(ctx).size.height;
-        final dpr     = MediaQuery.of(ctx).devicePixelRatio;
-        _toolbarHeightPx =
-            ((screenH - constraints.maxHeight) * dpr).round().clamp(0, 400);
-        return Stack(
-          children: [
-            // Dark backdrop — the GTK WebKit window sits on top of this.
-            Container(color: const Color(0xFF0A0D12)),
-            if (loading)
-              Positioned(
-                top: 0, left: 0, right: 0,
-                child: LinearProgressIndicator(
-                  value: _engine.activeTab?.progress,
-                  backgroundColor: Colors.transparent,
-                  valueColor: AlwaysStoppedAnimation(AppTheme.accent),
-                  minHeight: 3,
-                ),
+      // A keyed Container so _measureContentArea() can call
+      // RenderBox.localToGlobal on it to get the exact screen rect.
+      // The GTK WebKit window (override-redirect, borderless) is then
+      // positioned to cover exactly this area.
+      return Stack(
+        key: _contentAreaKey,
+        children: [
+          // Dark backdrop — the GTK WebKit window sits on top of this.
+          Container(color: const Color(0xFF0A0D12)),
+          if (loading)
+            Positioned(
+              top: 0, left: 0, right: 0,
+              child: LinearProgressIndicator(
+                value: _engine.activeTab?.progress,
+                backgroundColor: Colors.transparent,
+                valueColor: AlwaysStoppedAnimation(AppTheme.accent),
+                minHeight: 3,
               ),
-          ],
-        );
-      });
+            ),
+        ],
+      );
     }
 
     final isHttps = url.startsWith('https://');

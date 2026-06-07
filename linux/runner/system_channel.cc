@@ -82,43 +82,27 @@ static void webwin_ensure_created() {
 #endif
 }
 
-// Show the WebKit window below the Flutter toolbar.
-static void webwin_show(int toolbar_h) {
-  g_toolbar_h = toolbar_h > 0 ? toolbar_h : 94;
+// Position and show the WebKit window at exact screen coordinates (logical px).
+// x/y/w/h come from Flutter's RenderBox.localToGlobal — already in logical
+// pixels that match GTK's coordinate system.
+static void webwin_show(int x, int y, int w, int h) {
+  if (w < 10) w = 800;
+  if (h < 10) h = 600;
   webwin_ensure_created();
-
-  GtkWindow* parent = main_gtk_window();
-  int sw = 1920, sh = 1080;
-
-  // Use primary monitor geometry — accurate even when the GTK window is
-  // fullscreen (gtk_window_get_size returns the pre-fullscreen size on some WMs).
-  if (g_reg) {
-    GtkWidget* view = GTK_WIDGET(fl_plugin_registrar_get_view(g_reg));
-    if (view) {
-      GdkDisplay* dpy = gtk_widget_get_display(view);
-      if (dpy) {
-        GdkMonitor* mon = gdk_display_get_primary_monitor(dpy);
-        if (!mon && gdk_display_get_n_monitors(dpy) > 0)
-          mon = gdk_display_get_monitor(dpy, 0);
-        if (mon) {
-          GdkRectangle geo;
-          gdk_monitor_get_geometry(mon, &geo);
-          sw = geo.width;
-          sh = geo.height;
-        }
-      }
-    }
-  }
-  // Final fallback: read from the GtkWindow itself.
-  if ((sw <= 0 || sh <= 0) && parent) gtk_window_get_size(parent, &sw, &sh);
-
-  int content_h = sh - g_toolbar_h;
-  if (content_h < 100) content_h = 100;
-
-  gtk_window_move(GTK_WINDOW(g_webwin), 0, g_toolbar_h);
-  gtk_window_resize(GTK_WINDOW(g_webwin), sw, content_h);
+  gtk_window_move(GTK_WINDOW(g_webwin), x, y);
+  gtk_window_resize(GTK_WINDOW(g_webwin), w, h);
   gtk_widget_show_all(g_webwin);
   gtk_window_present(GTK_WINDOW(g_webwin));
+}
+
+// Reposition an already-visible WebKit window (e.g. user moved the browser
+// app window on the desktop).
+static void webwin_reposition(int x, int y, int w, int h) {
+  if (!g_webwin || !gtk_widget_get_visible(g_webwin)) return;
+  if (w < 10) w = 800;
+  if (h < 10) h = 600;
+  gtk_window_move(GTK_WINDOW(g_webwin), x, y);
+  gtk_window_resize(GTK_WINDOW(g_webwin), w, h);
 }
 
 // Hide the WebKit window (keep it in memory for fast re-show).
@@ -1817,18 +1801,40 @@ static void on_method_call(FlMethodChannel* /*channel*/,
   // Flutter positions it below its own URL bar / nav chrome.
 
   } else if (strcmp(method, "browser.webview_show") == 0) {
-    int toolbar_h = 94;
+    // Dart passes the exact content-area rect measured via RenderBox.localToGlobal
+    int x = 0, y = 94, w = 1920, h = 986;
     const char* url = "about:blank";
     if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
-      FlValue* th = fl_value_lookup_string(args, "toolbar_height");
-      if (th && fl_value_get_type(th) == FL_VALUE_TYPE_INT)
-        toolbar_h = (int)fl_value_get_int(th);
+      FlValue* vx = fl_value_lookup_string(args, "x");
+      FlValue* vy = fl_value_lookup_string(args, "y");
+      FlValue* vw = fl_value_lookup_string(args, "w");
+      FlValue* vh = fl_value_lookup_string(args, "h");
+      if (vx && fl_value_get_type(vx) == FL_VALUE_TYPE_INT) x = (int)fl_value_get_int(vx);
+      if (vy && fl_value_get_type(vy) == FL_VALUE_TYPE_INT) y = (int)fl_value_get_int(vy);
+      if (vw && fl_value_get_type(vw) == FL_VALUE_TYPE_INT) w = (int)fl_value_get_int(vw);
+      if (vh && fl_value_get_type(vh) == FL_VALUE_TYPE_INT) h = (int)fl_value_get_int(vh);
       FlValue* u = fl_value_lookup_string(args, "url");
       if (u && fl_value_get_type(u) == FL_VALUE_TYPE_STRING)
         url = fl_value_get_string(u);
     }
-    webwin_show(toolbar_h);
+    webwin_show(x, y, w, h);
     webwin_navigate(url);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(TRUE)));
+
+  } else if (strcmp(method, "browser.webview_reposition") == 0) {
+    // Reposition the visible WebKit window when the browser app window moves.
+    int x = 0, y = 94, w = 1920, h = 986;
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* vx = fl_value_lookup_string(args, "x");
+      FlValue* vy = fl_value_lookup_string(args, "y");
+      FlValue* vw = fl_value_lookup_string(args, "w");
+      FlValue* vh = fl_value_lookup_string(args, "h");
+      if (vx && fl_value_get_type(vx) == FL_VALUE_TYPE_INT) x = (int)fl_value_get_int(vx);
+      if (vy && fl_value_get_type(vy) == FL_VALUE_TYPE_INT) y = (int)fl_value_get_int(vy);
+      if (vw && fl_value_get_type(vw) == FL_VALUE_TYPE_INT) w = (int)fl_value_get_int(vw);
+      if (vh && fl_value_get_type(vh) == FL_VALUE_TYPE_INT) h = (int)fl_value_get_int(vh);
+    }
+    webwin_reposition(x, y, w, h);
     resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(TRUE)));
 
   } else if (strcmp(method, "browser.webview_hide") == 0) {

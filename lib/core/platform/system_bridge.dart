@@ -330,14 +330,25 @@ class SystemBridge {
   // The C++ layer maintains a single borderless GtkWindow with override-redirect
   // (so matchbox WM never fullscreens it) positioned below Flutter's URL bar.
 
-  /// Show the native WebKit window at (x=0, y=toolbarHeightPx) and load [url].
-  static Future<void> browserWebViewShow(String url, int toolbarHeightPx) async {
+  /// Show the native WebKit window at the exact content-area rect (logical px)
+  /// and navigate to [url].  x/y/w/h come from RenderBox.localToGlobal so they
+  /// are absolute screen coordinates regardless of where the browser window is.
+  static Future<void> browserWebViewShow(
+      String url, int x, int y, int w, int h) async {
     if (!_live) return;
     try {
-      await _ch.invokeMethod<void>('browser.webview_show', {
-        'url': url,
-        'toolbar_height': toolbarHeightPx,
-      });
+      await _ch.invokeMethod<void>('browser.webview_show',
+          {'url': url, 'x': x, 'y': y, 'w': w, 'h': h});
+    } catch (_) {}
+  }
+
+  /// Reposition the already-visible WebKit window (e.g. browser app window moved).
+  static Future<void> browserWebViewReposition(
+      int x, int y, int w, int h) async {
+    if (!_live) return;
+    try {
+      await _ch.invokeMethod<void>(
+          'browser.webview_reposition', {'x': x, 'y': y, 'w': w, 'h': h});
     } catch (_) {}
   }
 
