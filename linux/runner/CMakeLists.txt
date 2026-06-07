@@ -26,5 +26,8 @@ target_link_libraries(${BINARY_NAME} PRIVATE PkgConfig::GTK)
 # WebKit2GTK for the embedded browser (system_channel.cc creates a native
 # WebKitWebView in a borderless transient GTK window; no Flutter plugin needed).
 target_link_libraries(${BINARY_NAME} PRIVATE PkgConfig::WEBKIT)
+# X11 for XReparentWindow / XMoveResizeWindow used by the embedded browser.
+find_package(X11 REQUIRED)
+target_link_libraries(${BINARY_NAME} PRIVATE ${X11_LIBRARIES})
 
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")

@@ -11,20 +11,28 @@
 #include <webkit2/webkit2.h>
 #ifdef GDK_WINDOWING_X11
 #include <gdk/gdkx.h>
+#include <X11/Xlib.h>
 #endif
 
 static const char* kChannelName = "krdos/system";
 
 // ---------------------------------------------------------------------------
-// Embedded WebKit2GTK browser  (override-redirect borderless child window)
+// Embedded WebKit2GTK browser
+//
+// Architecture: X11 child-window embedding
+//   The WebKit GtkWindow is realized (X11 window created) then immediately
+//   reparented into the Flutter GtkWindow using XReparentWindow.  As a child
+//   of the Flutter X11 window the coordinates (x,y) passed from Dart are
+//   relative to the Flutter window — which is fullscreen at (0,0) — so they
+//   map directly to Flutter's RenderBox.localToGlobal values with zero math.
+//   No separate top-level positioning, no GTK/WM coordinate translation.
 // ---------------------------------------------------------------------------
 
-// Saved at init time so webview helpers can reach the main GTK window.
-static FlPluginRegistrar* g_reg     = nullptr;
-static GtkWidget*         g_webwin  = nullptr;   // borderless webkit window
-static WebKitWebView*     g_webview = nullptr;
+static FlPluginRegistrar* g_reg       = nullptr;
+static GtkWidget*         g_webwin    = nullptr;
+static WebKitWebView*     g_webview   = nullptr;
+static bool               g_reparented = false;  // XReparentWindow done once
 
-// Returns the main GtkWindow that Flutter is running in.
 static GtkWindow* main_gtk_window() {
   if (!g_reg) return nullptr;
   GtkWidget* view = GTK_WIDGET(fl_plugin_registrar_get_view(g_reg));
@@ -32,29 +40,20 @@ static GtkWindow* main_gtk_window() {
   return GTK_WINDOW(gtk_widget_get_toplevel(view));
 }
 
-// Ensure the WebKit window exists (created lazily).
 static void webwin_ensure_created() {
   if (g_webwin) return;
 
-  GtkWindow* parent = main_gtk_window();
-
+  // Create a bare top-level window as the WebKit container.
+  // It will be reparented into the Flutter X11 window on first show.
   g_webwin = gtk_window_new(GTK_WINDOW_TOPLEVEL);
   gtk_window_set_decorated(GTK_WINDOW(g_webwin), FALSE);
   gtk_window_set_resizable(GTK_WINDOW(g_webwin), FALSE);
   gtk_window_set_skip_taskbar_hint(GTK_WINDOW(g_webwin), TRUE);
   gtk_window_set_skip_pager_hint(GTK_WINDOW(g_webwin), TRUE);
-  // DROPDOWN_MENU hint tells matchbox/most WMs not to fullscreen this window.
-  gtk_window_set_type_hint(GTK_WINDOW(g_webwin),
-                           GDK_WINDOW_TYPE_HINT_DROPDOWN_MENU);
-  if (parent) gtk_window_set_transient_for(GTK_WINDOW(g_webwin), parent);
 
-  // Build WebView with sensible defaults.
-  // Hardware acceleration is disabled — GPU drivers on the target (Kali/Acer)
-  // cause a black screen with ALWAYS policy.  Software rendering works on
-  // every GPU and is fast enough for normal browsing.
   WebKitSettings* ws = webkit_settings_new();
   webkit_settings_set_enable_javascript(ws, TRUE);
-  webkit_settings_set_enable_webgl(ws, FALSE);  // needs GPU, keep off
+  webkit_settings_set_enable_webgl(ws, FALSE);
   webkit_settings_set_enable_media(ws, TRUE);
   webkit_settings_set_allow_file_access_from_file_urls(ws, FALSE);
   webkit_settings_set_user_agent(ws,
@@ -67,46 +66,99 @@ static void webwin_ensure_created() {
   g_object_unref(ws);
   gtk_container_add(GTK_CONTAINER(g_webwin), GTK_WIDGET(g_webview));
 
-  // Realize (creates GdkWindow) without mapping so we can set
-  // override-redirect BEFORE the window manager sees it.
+  // Realize creates the underlying X11 window without mapping it.
   gtk_widget_realize(g_webwin);
 
 #ifdef GDK_WINDOWING_X11
+  // Set override_redirect so the WM never manages this window.
   GdkWindow* gdk_win = gtk_widget_get_window(g_webwin);
-  if (gdk_win && GDK_IS_X11_WINDOW(gdk_win)) {
-    // override_redirect = TRUE: WM is completely bypassed.
-    // matchbox will never fullscreen or decorate this window.
+  if (gdk_win && GDK_IS_X11_WINDOW(gdk_win))
     gdk_window_set_override_redirect(gdk_win, TRUE);
-  }
 #endif
 }
 
-// Position and show the WebKit window at exact screen coordinates (logical px).
-// x/y/w/h come from Flutter's RenderBox.localToGlobal — already in logical
-// pixels that match GTK's coordinate system.
+// Show and position the WebKit window covering the content-area rect.
+// x/y are Flutter logical-pixel coords from RenderBox.localToGlobal.
+// After reparenting into the Flutter X11 window those coords are correct
+// with no further translation.
 static void webwin_show(int x, int y, int w, int h) {
   if (w < 10) w = 800;
   if (h < 10) h = 600;
   webwin_ensure_created();
+
+#ifdef GDK_WINDOWING_X11
+  GtkWindow*  parent     = main_gtk_window();
+  GdkWindow*  gdk_parent = parent
+                           ? gtk_widget_get_window(GTK_WIDGET(parent))
+                           : nullptr;
+  GdkWindow*  gdk_webkit = gtk_widget_get_window(g_webwin);
+
+  if (!g_reparented && gdk_parent && gdk_webkit &&
+      GDK_IS_X11_WINDOW(gdk_parent) && GDK_IS_X11_WINDOW(gdk_webkit)) {
+    Display* dpy      = GDK_DISPLAY_XDISPLAY(gdk_window_get_display(gdk_parent));
+    Window   xparent  = GDK_WINDOW_XID(gdk_parent);
+    Window   xwebkit  = GDK_WINDOW_XID(gdk_webkit);
+    // Reparent into the Flutter window — coordinates now relative to it.
+    XReparentWindow(dpy, xwebkit, xparent, x, y);
+    XResizeWindow(dpy, xwebkit, (unsigned)w, (unsigned)h);
+    XFlush(dpy);
+    g_reparented = true;
+    // Let GTK map the widget (it's now a child window).
+    gtk_widget_show_all(g_webwin);
+    XRaiseWindow(dpy, xwebkit);
+    XFlush(dpy);
+    return;
+  }
+
+  if (g_reparented && gdk_webkit && GDK_IS_X11_WINDOW(gdk_webkit)) {
+    Display* dpy     = GDK_DISPLAY_XDISPLAY(gdk_window_get_display(gdk_webkit));
+    Window   xwebkit = GDK_WINDOW_XID(gdk_webkit);
+    XMoveResizeWindow(dpy, xwebkit, x, y, (unsigned)w, (unsigned)h);
+    XMapRaised(dpy, xwebkit);
+    XFlush(dpy);
+    return;
+  }
+#endif
+  // Wayland / fallback path.
   gtk_window_move(GTK_WINDOW(g_webwin), x, y);
   gtk_window_resize(GTK_WINDOW(g_webwin), w, h);
   gtk_widget_show_all(g_webwin);
   gtk_window_present(GTK_WINDOW(g_webwin));
 }
 
-// Reposition an already-visible WebKit window (e.g. user moved the browser
-// app window on the desktop).
+// Reposition the visible WebKit child window without navigating.
 static void webwin_reposition(int x, int y, int w, int h) {
-  if (!g_webwin || !gtk_widget_get_visible(g_webwin)) return;
+  if (!g_webwin) return;
   if (w < 10) w = 800;
   if (h < 10) h = 600;
+#ifdef GDK_WINDOWING_X11
+  GdkWindow* gdk_webkit = gtk_widget_get_window(g_webwin);
+  if (g_reparented && gdk_webkit && GDK_IS_X11_WINDOW(gdk_webkit)) {
+    Display* dpy     = GDK_DISPLAY_XDISPLAY(gdk_window_get_display(gdk_webkit));
+    Window   xwebkit = GDK_WINDOW_XID(gdk_webkit);
+    XMoveResizeWindow(dpy, xwebkit, x, y, (unsigned)w, (unsigned)h);
+    XFlush(dpy);
+    return;
+  }
+#endif
   gtk_window_move(GTK_WINDOW(g_webwin), x, y);
   gtk_window_resize(GTK_WINDOW(g_webwin), w, h);
 }
 
-// Hide the WebKit window (keep it in memory for fast re-show).
+// Hide the WebKit child window.
 static void webwin_hide() {
-  if (g_webwin) gtk_widget_hide(g_webwin);
+  if (!g_webwin) return;
+#ifdef GDK_WINDOWING_X11
+  GdkWindow* gdk_webkit = gtk_widget_get_window(g_webwin);
+  if (g_reparented && gdk_webkit && GDK_IS_X11_WINDOW(gdk_webkit)) {
+    Display* dpy     = GDK_DISPLAY_XDISPLAY(gdk_window_get_display(gdk_webkit));
+    Window   xwebkit = GDK_WINDOW_XID(gdk_webkit);
+    XUnmapWindow(dpy, xwebkit);
+    XFlush(dpy);
+    return;
+  }
+#endif
+  gtk_widget_hide(g_webwin);
 }
 
 // Navigate to url, applying https:// prefix / DuckDuckGo search as needed.
