@@ -37,7 +37,7 @@ class FsEntry {
       name: (m['name'] as String?) ?? '',
       isDir: (m['is_dir'] as bool?) ?? false,
       isLink: (m['is_link'] as bool?) ?? false,
-      size: (m['size'] as int?) ?? 0,
+      size: (m['size'] as num?)?.toInt() ?? 0,
       modified: m['modified'] != null
           ? DateTime.fromMillisecondsSinceEpoch(
               ((m['modified'] as num).toInt()) * 1000)

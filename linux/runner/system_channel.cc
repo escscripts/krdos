@@ -96,13 +96,17 @@ static void on_method_call(FlMethodChannel* /*channel*/,
 
   // ── Bluetooth ─────────────────────────────────────────────────────────────
   } else if (strcmp(method, "bluetooth.enable") == 0) {
-    bool ok = shell_ok("sudo rfkill unblock bluetooth");
-    shell_ok("bluetoothctl power on");
+    // Ensure the bluetooth service is running (needed if it wasn't started at boot)
+    shell_ok("systemctl start bluetooth 2>/dev/null");
+    // rfkill unblock — running as root so no sudo needed
+    shell_ok("rfkill unblock bluetooth 2>/dev/null");
+    shell_ok("rfkill unblock all 2>/dev/null");
+    bool ok = shell_ok("bluetoothctl power on 2>/dev/null");
     resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(ok)));
 
   } else if (strcmp(method, "bluetooth.disable") == 0) {
-    shell_ok("bluetoothctl power off");
-    bool ok = shell_ok("sudo rfkill block bluetooth");
+    shell_ok("bluetoothctl power off 2>/dev/null");
+    bool ok = shell_ok("rfkill block bluetooth 2>/dev/null");
     resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(ok)));
 
   // ── Microphone ────────────────────────────────────────────────────────────
@@ -294,11 +298,27 @@ static void on_method_call(FlMethodChannel* /*channel*/,
       if (c && fl_value_get_type(c) == FL_VALUE_TYPE_STRING) command = fl_value_get_string(c);
       if (d && fl_value_get_type(d) == FL_VALUE_TYPE_STRING) cwd     = fl_value_get_string(d);
     }
-    char full[16384];
+    // Wrap command with a 300-second hard timeout (-k 5 sends SIGKILL 5s after SIGTERM)
+    // to prevent long-running processes (apt-get, pip, etc.) from freezing the UI thread.
+    char full[16384 + 64];
     snprintf(full, sizeof(full),
-      "cd %s 2>/dev/null || cd /home/admin; %s", cwd, command);
+      "cd %s 2>/dev/null || cd /home/admin; timeout -k 5 300 %s", cwd, command);
     char* out = shell_capture(full);
-    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_string(out)));
+    // Cap output at 512 KB to prevent OOM from verbose commands (e.g. make, pip install)
+    const size_t MAX_TERM_OUTPUT = 512UL * 1024UL;
+    size_t out_len = out ? strlen(out) : 0;
+    if (out && out_len > MAX_TERM_OUTPUT) {
+      const char* trunc_msg = "\n\n... [output truncated — exceeded 512 KB] ...\n";
+      size_t msg_len = strlen(trunc_msg);
+      char* newbuf = (char*)realloc(out, MAX_TERM_OUTPUT + msg_len + 1);
+      if (newbuf) {
+        out = newbuf;
+        memcpy(out + MAX_TERM_OUTPUT, trunc_msg, msg_len + 1);
+      } else {
+        out[MAX_TERM_OUTPUT] = '\0';
+      }
+    }
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_string(out ? out : "")));
     free(out);
 
   // ── Power management ──────────────────────────────────────────────────────
