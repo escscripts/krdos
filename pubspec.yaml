@@ -45,7 +45,9 @@ dependencies:
   file_picker: ^8.1.6
   http: ^1.2.0
   path_provider: ^2.1.4
-  webview_flutter: ^4.4.2
+  # webview_flutter removed — has no Linux implementation (renders grey screen).
+  # Browser is now implemented via a native WebKit2GTK GtkWindow managed by
+  # system_channel.cc; see linux/runner/system_channel.cc browser.webview_* methods.
 
 dev_dependencies:
   flutter_test:

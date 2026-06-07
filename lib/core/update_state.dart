@@ -218,13 +218,27 @@ class UpdateState extends ChangeNotifier {
   /// Versions are "YYYYMMDD-HHMM-sha" — lexicographic comparison works because
   /// the date/time prefix is zero-padded.
   bool _isNewer(String remote, String local) {
-    if (local == 'unknown' || local == 'dev-build') return false;
-    // Strip the sha suffix for comparison (keep date+time)
-    String trimmed(String v) {
+    // Sentinel values mean "not a real installed version"
+    if (local == 'unknown' || local == 'dev-build' || local == 'none' || local.isEmpty) {
+      return false;
+    }
+    // setup.sh writes "initial-YYYYMMDD" on fresh install — always offer update
+    if (local.startsWith('initial-')) return true;
+
+    // Normalise both sides: extract "YYYYMMDD-HHMM-sha" in case the stored
+    // version contains the full release name (e.g. "KrdOS latest (20260607-…)").
+    // _extractVersion is only applied to the remote by the caller, so we must
+    // apply it to local here too to keep the comparison symmetric.
+    final localVer  = _extractVersion(local)  ?? local;
+    final remoteVer = _extractVersion(remote) ?? remote;
+
+    // Strip SHA suffix — compare only the date+time portion which is
+    // zero-padded so plain lexicographic order equals chronological order.
+    String dateTime(String v) {
       final parts = v.split('-');
       return parts.length >= 2 ? '${parts[0]}-${parts[1]}' : v;
     }
-    return trimmed(remote).compareTo(trimmed(local)) > 0;
+    return dateTime(remoteVer).compareTo(dateTime(localVer)) > 0;
   }
 
   String get statusLabel {

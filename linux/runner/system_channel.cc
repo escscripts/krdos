@@ -7,7 +7,147 @@
 #include <stdlib.h>
 #include <string.h>
 
+// WebKit2GTK — embedded browser window
+#include <webkit2/webkit2.h>
+#ifdef GDK_WINDOWING_X11
+#include <gdk/gdkx.h>
+#endif
+
 static const char* kChannelName = "krdos/system";
+
+// ---------------------------------------------------------------------------
+// Embedded WebKit2GTK browser  (override-redirect borderless child window)
+// ---------------------------------------------------------------------------
+
+// Saved at init time so webview helpers can reach the main GTK window.
+static FlPluginRegistrar* g_reg     = nullptr;
+static GtkWidget*         g_webwin  = nullptr;   // borderless webkit window
+static WebKitWebView*     g_webview = nullptr;
+static int                g_toolbar_h = 94;       // px — updated per call
+
+// Returns the main GtkWindow that Flutter is running in.
+static GtkWindow* main_gtk_window() {
+  if (!g_reg) return nullptr;
+  GtkWidget* view = GTK_WIDGET(fl_plugin_registrar_get_view(g_reg));
+  if (!view) return nullptr;
+  return GTK_WINDOW(gtk_widget_get_toplevel(view));
+}
+
+// Ensure the WebKit window exists (created lazily).
+static void webwin_ensure_created() {
+  if (g_webwin) return;
+
+  GtkWindow* parent = main_gtk_window();
+
+  g_webwin = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+  gtk_window_set_decorated(GTK_WINDOW(g_webwin), FALSE);
+  gtk_window_set_resizable(GTK_WINDOW(g_webwin), FALSE);
+  gtk_window_set_skip_taskbar_hint(GTK_WINDOW(g_webwin), TRUE);
+  gtk_window_set_skip_pager_hint(GTK_WINDOW(g_webwin), TRUE);
+  // DROPDOWN_MENU hint tells matchbox/most WMs not to fullscreen this window.
+  gtk_window_set_type_hint(GTK_WINDOW(g_webwin),
+                           GDK_WINDOW_TYPE_HINT_DROPDOWN_MENU);
+  if (parent) gtk_window_set_transient_for(GTK_WINDOW(g_webwin), parent);
+
+  // Build WebView with sensible defaults.
+  WebKitSettings* ws = webkit_settings_new();
+  webkit_settings_set_enable_javascript(ws, TRUE);
+  webkit_settings_set_enable_webgl(ws, TRUE);
+  webkit_settings_set_enable_media(ws, TRUE);
+  webkit_settings_set_allow_file_access_from_file_urls(ws, FALSE);
+  webkit_settings_set_user_agent(ws,
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) KrdOS/1.0 Version/17.0 Safari/605.1.15");
+  webkit_settings_set_hardware_acceleration_policy(
+    ws, WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS);
+
+  g_webview = WEBKIT_WEB_VIEW(webkit_web_view_new_with_settings(ws));
+  g_object_unref(ws);
+  gtk_container_add(GTK_CONTAINER(g_webwin), GTK_WIDGET(g_webview));
+
+  // Realize (creates GdkWindow) without mapping so we can set
+  // override-redirect BEFORE the window manager sees it.
+  gtk_widget_realize(g_webwin);
+
+#ifdef GDK_WINDOWING_X11
+  GdkWindow* gdk_win = gtk_widget_get_window(g_webwin);
+  if (gdk_win && GDK_IS_X11_WINDOW(gdk_win)) {
+    // override_redirect = TRUE: WM is completely bypassed.
+    // matchbox will never fullscreen or decorate this window.
+    gdk_window_set_override_redirect(gdk_win, TRUE);
+  }
+#endif
+}
+
+// Show the WebKit window below the Flutter toolbar.
+static void webwin_show(int toolbar_h) {
+  g_toolbar_h = toolbar_h > 0 ? toolbar_h : 94;
+  webwin_ensure_created();
+
+  GtkWindow* parent = main_gtk_window();
+  int sw = 1920, sh = 1080;
+  if (parent) gtk_window_get_size(parent, &sw, &sh);
+
+  // Fallback: use GDK screen dimensions (more reliable when fullscreen).
+  if (g_reg) {
+    GtkWidget* view = GTK_WIDGET(fl_plugin_registrar_get_view(g_reg));
+    if (view) {
+      GdkScreen* scr = gtk_widget_get_screen(view);
+      if (scr) { sw = gdk_screen_get_width(scr); sh = gdk_screen_get_height(scr); }
+    }
+  }
+
+  int content_h = sh - g_toolbar_h;
+  if (content_h < 100) content_h = 100;
+
+  gtk_window_move(GTK_WINDOW(g_webwin), 0, g_toolbar_h);
+  gtk_window_resize(GTK_WINDOW(g_webwin), sw, content_h);
+  gtk_widget_show_all(g_webwin);
+  gtk_window_present(GTK_WINDOW(g_webwin));
+}
+
+// Hide the WebKit window (keep it in memory for fast re-show).
+static void webwin_hide() {
+  if (g_webwin) gtk_widget_hide(g_webwin);
+}
+
+// Navigate to url, applying https:// prefix / DuckDuckGo search as needed.
+static void webwin_navigate(const char* raw) {
+  if (!g_webview || !raw || raw[0] == '\0') return;
+
+  if (strncmp(raw, "http://",  7) == 0 ||
+      strncmp(raw, "https://", 8) == 0 ||
+      strncmp(raw, "about:",   6) == 0) {
+    webkit_web_view_load_uri(g_webview, raw);
+    return;
+  }
+  // Bare domain? (contains a dot, no spaces)
+  if (strchr(raw, '.') && !strchr(raw, ' ')) {
+    char buf[2048];
+    snprintf(buf, sizeof(buf), "https://%s", raw);
+    webkit_web_view_load_uri(g_webview, buf);
+    return;
+  }
+  // Everything else → DuckDuckGo search
+  char encoded[2048] = {};
+  size_t si = 0, di = 0;
+  while (raw[si] && di < sizeof(encoded) - 4) {
+    unsigned char c = (unsigned char)raw[si++];
+    if (c == ' ')                      { encoded[di++] = '+'; }
+    else if ((c >= 'A' && c <= 'Z') ||
+             (c >= 'a' && c <= 'z') ||
+             (c >= '0' && c <= '9') ||
+             c == '-' || c == '_' || c == '.' || c == '~') {
+      encoded[di++] = (char)c;
+    } else {
+      snprintf(encoded + di, 4, "%%%02X", c);
+      di += 3;
+    }
+  }
+  char url[2200];
+  snprintf(url, sizeof(url), "https://duckduckgo.com/?q=%s", encoded);
+  webkit_web_view_load_uri(g_webview, url);
+}
 
 // ---------------------------------------------------------------------------
 // Shell helpers
@@ -1655,6 +1795,81 @@ static void on_method_call(FlMethodChannel* /*channel*/,
     free(log);
     resp = FL_METHOD_RESPONSE(fl_method_success_response_new(s));
 
+  // ── Embedded WebKit2GTK browser ──────────────────────────────────────────
+  // All browser.webview_* methods operate on a single borderless GtkWindow
+  // that contains a WebKitWebView.  The window uses override-redirect so the
+  // window manager (matchbox) never fullscreens or decorates it.
+  // Flutter positions it below its own URL bar / nav chrome.
+
+  } else if (strcmp(method, "browser.webview_show") == 0) {
+    int toolbar_h = 94;
+    const char* url = "about:blank";
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* th = fl_value_lookup_string(args, "toolbar_height");
+      if (th && fl_value_get_type(th) == FL_VALUE_TYPE_INT)
+        toolbar_h = (int)fl_value_get_int(th);
+      FlValue* u = fl_value_lookup_string(args, "url");
+      if (u && fl_value_get_type(u) == FL_VALUE_TYPE_STRING)
+        url = fl_value_get_string(u);
+    }
+    webwin_show(toolbar_h);
+    webwin_navigate(url);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(TRUE)));
+
+  } else if (strcmp(method, "browser.webview_hide") == 0) {
+    webwin_hide();
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(TRUE)));
+
+  } else if (strcmp(method, "browser.webview_navigate") == 0) {
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_STRING)
+      webwin_navigate(fl_value_get_string(args));
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(TRUE)));
+
+  } else if (strcmp(method, "browser.webview_back") == 0) {
+    if (g_webview && webkit_web_view_can_go_back(g_webview))
+      webkit_web_view_go_back(g_webview);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(TRUE)));
+
+  } else if (strcmp(method, "browser.webview_forward") == 0) {
+    if (g_webview && webkit_web_view_can_go_forward(g_webview))
+      webkit_web_view_go_forward(g_webview);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(TRUE)));
+
+  } else if (strcmp(method, "browser.webview_reload") == 0) {
+    if (g_webview) webkit_web_view_reload(g_webview);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(TRUE)));
+
+  } else if (strcmp(method, "browser.webview_stop") == 0) {
+    if (g_webview) webkit_web_view_stop_loading(g_webview);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(TRUE)));
+
+  } else if (strcmp(method, "browser.webview_get_info") == 0) {
+    FlValue* map = fl_value_new_map();
+    if (g_webview) {
+      const char* uri    = webkit_web_view_get_uri(g_webview);
+      const char* title  = webkit_web_view_get_title(g_webview);
+      gboolean can_back  = webkit_web_view_can_go_back(g_webview);
+      gboolean can_fwd   = webkit_web_view_can_go_forward(g_webview);
+      gboolean loading   = webkit_web_view_is_loading(g_webview);
+      double   progress  = webkit_web_view_get_estimated_load_progress(g_webview);
+      fl_value_set_string_take(map, "url",
+        fl_value_new_string(uri   ? uri   : ""));
+      fl_value_set_string_take(map, "title",
+        fl_value_new_string((title && title[0]) ? title : (uri ? uri : "")));
+      fl_value_set_string_take(map, "canGoBack",    fl_value_new_bool(can_back));
+      fl_value_set_string_take(map, "canGoForward", fl_value_new_bool(can_fwd));
+      fl_value_set_string_take(map, "isLoading",    fl_value_new_bool(loading));
+      fl_value_set_string_take(map, "progress",     fl_value_new_float(progress));
+    } else {
+      fl_value_set_string_take(map, "url",          fl_value_new_string(""));
+      fl_value_set_string_take(map, "title",        fl_value_new_string(""));
+      fl_value_set_string_take(map, "canGoBack",    fl_value_new_bool(FALSE));
+      fl_value_set_string_take(map, "canGoForward", fl_value_new_bool(FALSE));
+      fl_value_set_string_take(map, "isLoading",    fl_value_new_bool(FALSE));
+      fl_value_set_string_take(map, "progress",     fl_value_new_float(0.0));
+    }
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(map));
+
   } else {
     resp = FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
   }
@@ -1669,6 +1884,8 @@ static void on_method_call(FlMethodChannel* /*channel*/,
 void system_channel_init(FlPluginRegistry* registry) {
   FlPluginRegistrar* registrar =
       fl_plugin_registry_get_registrar_for_plugin(registry, "SystemChannel");
+  // Store globally so the WebKit helpers can reach the main GtkWindow.
+  g_reg = FL_PLUGIN_REGISTRAR(g_object_ref(G_OBJECT(registrar)));
   FlBinaryMessenger* messenger = fl_plugin_registrar_get_messenger(registrar);
   g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
 

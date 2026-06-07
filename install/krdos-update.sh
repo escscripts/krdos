@@ -323,9 +323,15 @@ if [[ -f "$TMP_DIR/setup.sh" ]]; then
 fi
 
 # ── Stamp new version ─────────────────────────────────────────────────────────
+# Extract only the "YYYYMMDD-HHMM-sha" portion so the Flutter UI can compare
+# versions with a simple lexicographic date-time comparison.  Storing the full
+# release name (e.g. "KrdOS latest (20260607-1316-abc1234)") caused the Flutter
+# _isNewer() check to always return false because the "KrdOS latest" prefix
+# sorts lexicographically higher than the plain timestamp.
 mkdir -p /opt/krdos
-echo "$REMOTE_VERSION" > "$VERSION_FILE"
-ok "Version: $REMOTE_VERSION"
+CLEAN_VERSION=$(echo "$REMOTE_VERSION" | grep -oP '\d{8}-\d{4}-[a-f0-9]+' | head -1)
+echo "${CLEAN_VERSION:-$REMOTE_VERSION}" > "$VERSION_FILE"
+ok "Version: ${CLEAN_VERSION:-$REMOTE_VERSION}"
 
 # ── Prune old backups — keep the 3 most recent ───────────────────────────────
 ls -dt /opt/customos-backup-* 2>/dev/null | tail -n +4 | xargs rm -rf 2>/dev/null || true
