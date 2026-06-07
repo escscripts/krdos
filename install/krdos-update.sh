@@ -314,7 +314,7 @@ ok "Bundle installed."
 # ── Ensure runtime dependencies are present ───────────────────────────────────
 # The krdos binary links against WebKit2GTK for the embedded browser.
 # On existing installs that pre-date this dependency, apt-get installs it now.
-WEBKIT_PKGS=(libwebkit2gtk-4.0-0 libjavascriptcoregtk-4.0-0)
+WEBKIT_PKGS=(libwebkit2gtk-4.1-0 libjavascriptcoregtk-4.1-0)
 MISSING_PKGS=()
 for pkg in "${WEBKIT_PKGS[@]}"; do
   dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" \
