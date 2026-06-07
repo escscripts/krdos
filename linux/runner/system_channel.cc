@@ -23,7 +23,6 @@ static const char* kChannelName = "krdos/system";
 static FlPluginRegistrar* g_reg     = nullptr;
 static GtkWidget*         g_webwin  = nullptr;   // borderless webkit window
 static WebKitWebView*     g_webview = nullptr;
-static int                g_toolbar_h = 94;       // px — updated per call
 
 // Returns the main GtkWindow that Flutter is running in.
 static GtkWindow* main_gtk_window() {
