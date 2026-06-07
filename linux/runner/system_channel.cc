@@ -1913,6 +1913,36 @@ static void on_method_call(FlMethodChannel* /*channel*/,
     }
     resp = FL_METHOD_RESPONSE(fl_method_success_response_new(map));
 
+  } else if (strcmp(method, "browser.cookies_clear") == 0) {
+    // Delete all cookies stored in the default WebKit cookie manager.
+    if (g_webview) {
+      WebKitWebContext* ctx = webkit_web_view_get_context(g_webview);
+      WebKitCookieManager* cm = webkit_web_context_get_cookie_manager(ctx);
+      webkit_cookie_manager_delete_all_cookies(cm);
+    }
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(TRUE)));
+
+  } else if (strcmp(method, "browser.js_run") == 0) {
+    // Run arbitrary JavaScript in the current page (fire-and-forget).
+    // args is a map {"script": "..."} or a plain string.
+    if (g_webview) {
+      const char* script = nullptr;
+      if (args) {
+        if (fl_value_get_type(args) == FL_VALUE_TYPE_STRING) {
+          script = fl_value_get_string(args);
+        } else if (fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+          FlValue* sv = fl_value_lookup_string(args, "script");
+          if (sv && fl_value_get_type(sv) == FL_VALUE_TYPE_STRING)
+            script = fl_value_get_string(sv);
+        }
+      }
+      if (script && script[0]) {
+        webkit_web_view_run_javascript(g_webview, script,
+                                       nullptr, nullptr, nullptr);
+      }
+    }
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(TRUE)));
+
   } else {
     resp = FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
   }

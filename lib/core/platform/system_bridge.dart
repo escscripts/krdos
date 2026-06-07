@@ -394,6 +394,21 @@ class SystemBridge {
     } catch (_) { return {}; }
   }
 
+  /// Delete all cookies stored in the WebKit cookie manager.
+  static Future<void> browserCookiesClear() async {
+    if (!_live) return;
+    try { await _ch.invokeMethod<void>('browser.cookies_clear'); } catch (_) {}
+  }
+
+  /// Run arbitrary JavaScript in the currently loaded WebKit page.
+  /// Fire-and-forget — no return value is exposed to Dart.
+  static Future<void> browserJsRun(String script) async {
+    if (!_live) return;
+    try {
+      await _ch.invokeMethod<void>('browser.js_run', {'script': script});
+    } catch (_) {}
+  }
+
   // - Software Updates -
 
   /// Reads /etc/krdos/update.conf and returns {repo: String, has_token: bool}.
