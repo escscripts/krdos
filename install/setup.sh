@@ -119,6 +119,7 @@ ok "Cursor themes installed (DMZ-White)"
 # Flutter / GTK3 runtime
 pkg \
   libgtk-3-0 libgtk-3-bin \
+  libwebkit2gtk-4.0-0 \
   libglib2.0-0 libgdk-pixbuf-2.0-0 \
   libpango-1.0-0 libpangocairo-1.0-0 \
   libcairo2 libatk1.0-0 libatk-bridge2.0-0 \
@@ -460,7 +461,7 @@ read -r SCREEN_W SCREEN_H < /run/krdos/primary-resolution 2>/dev/null
 # Fallback: ask X directly
 if [[ -z "$SCREEN_W" || "$SCREEN_W" -lt 100 ]]; then
   SCREEN_WH=$(xrandr --query 2>/dev/null \
-    | awk '/current/{match($0,/current ([0-9]+) x ([0-9]+)/,a); print a[1],a[2]}')
+    | awk '/connected primary/{match($0,/([0-9]+)x([0-9]+)[+][0-9]+[+][0-9]+/,a); if(a[1]+0>0){print a[1],a[2]; exit}}')
   SCREEN_W=${SCREEN_WH%% *}
   SCREEN_H=${SCREEN_WH##* }
 fi
@@ -530,11 +531,19 @@ echo "KrdOS: Flutter PID=$FLUTTER_PID"
 
   enforce_fullscreen() {
     local wid="$1"
-    # Re-read resolution in case of hotplug
+    # Re-read primary display resolution in case of hotplug.
+    # Uses /run/krdos/primary-resolution written by krdos-configure-displays.sh,
+    # falling back to 'connected primary' in xrandr so we always get the laptop
+    # screen dimensions, not the total virtual desktop spanning all monitors.
     local w h wh
-    wh=$(xrandr --query 2>/dev/null \
-      | awk '/current/{match($0,/current ([0-9]+) x ([0-9]+)/,a); print a[1],a[2]}')
-    w=${wh%% *}; h=${wh##* }
+    if [[ -f /run/krdos/primary-resolution ]]; then
+      read -r w h < /run/krdos/primary-resolution 2>/dev/null
+    fi
+    if [[ -z "$w" || "$w" -lt 100 ]]; then
+      wh=$(xrandr --query 2>/dev/null \
+        | awk '/connected primary/{match($0,/([0-9]+)x([0-9]+)[+][0-9]+[+][0-9]+/,a); if(a[1]+0>0){print a[1],a[2]; exit}}')
+      w=${wh%% *}; h=${wh##* }
+    fi
     : "${w:=$SCREEN_W}" "${h:=$SCREEN_H}"
 
     # Remove decorations, position at 0,0, resize to full screen

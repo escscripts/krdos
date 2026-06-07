@@ -213,6 +213,32 @@ WRAPPER
 chmod +x /usr/local/bin/krdos-ui
 ok "Launcher /usr/local/bin/krdos-ui → $INSTALL_DIR"
 
+# ── Patch xinitrc watchdog for multi-monitor (primary display only) ───────────
+# The old watchdog used `awk '/current/{...}'` which returns the TOTAL virtual
+# desktop size (e.g. 3840x1080 for dual 1080p monitors), causing the Flutter
+# window to span both screens.  Patch it to use 'connected primary' so it
+# always sizes to the laptop/primary display only (1920x1080).
+if [[ -f /etc/krdos/xinitrc ]]; then
+  if grep -qF "awk '/current/{match" /etc/krdos/xinitrc; then
+    python3 - <<'PYEOF'
+path = '/etc/krdos/xinitrc'
+with open(path) as f:
+    content = f.read()
+old_line = "| awk '/current/{match($0,/current ([0-9]+) x ([0-9]+)/,a); print a[1],a[2]}')"
+new_line = "| awk '/connected primary/{match($0,/([0-9]+)x([0-9]+)[+][0-9]+[+][0-9]+/,a); if(a[1]+0>0){print a[1],a[2]; exit}}')"
+if old_line in content:
+    with open(path, 'w') as f:
+        f.write(content.replace(old_line, new_line))
+    print("xinitrc patched: watchdog now uses primary display dimensions (multi-monitor fix)")
+else:
+    print("xinitrc watchdog: pattern not found — may already be patched or format differs")
+PYEOF
+    ok "xinitrc multi-monitor watchdog patched."
+  else
+    info "xinitrc watchdog already patched for multi-monitor."
+  fi
+fi
+
 # ── Also fix WiFi while we're here ────────────────────────────────────────────
 info "Unblocking WiFi radio..."
 rfkill unblock all 2>/dev/null || true

@@ -1468,13 +1468,16 @@ static void on_method_call(FlMethodChannel* /*channel*/,
     //  2. Tries every common browser binary name in priority order
     //  3. Falls through to xdg-open as a last resort
     //  4. Runs detached so Flutter is not blocked
+    // --no-sandbox / --disable-setuid-sandbox are required when KrdOS runs as
+    // root (the default kiosk user).  Chromium refuses to start as root without
+    // these flags.  Firefox and xdg-open don't need them.
     char cmd[4096];
     snprintf(cmd, sizeof(cmd),
       "DISPLAY=\"${DISPLAY:-:0}\" XAUTHORITY=\"${XAUTHORITY:-/root/.Xauthority}\" "
-      "(chromium \"%s\" 2>/dev/null"
-      " || chromium-browser \"%s\" 2>/dev/null"
-      " || google-chrome \"%s\" 2>/dev/null"
-      " || google-chrome-stable \"%s\" 2>/dev/null"
+      "(chromium --no-sandbox --disable-setuid-sandbox \"%s\" 2>/dev/null"
+      " || chromium-browser --no-sandbox --disable-setuid-sandbox \"%s\" 2>/dev/null"
+      " || google-chrome --no-sandbox --disable-setuid-sandbox \"%s\" 2>/dev/null"
+      " || google-chrome-stable --no-sandbox --disable-setuid-sandbox \"%s\" 2>/dev/null"
       " || firefox \"%s\" 2>/dev/null"
       " || firefox-esr \"%s\" 2>/dev/null"
       " || xdg-open \"%s\" 2>/dev/null"
@@ -1482,6 +1485,55 @@ static void on_method_call(FlMethodChannel* /*channel*/,
       url, url, url, url, url, url, url);
     shell_ok(cmd);
     resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(true)));
+
+  // ── Ethernet interfaces ───────────────────────────────────────────────────
+  } else if (strcmp(method, "ethernet.list") == 0) {
+    // Read all Ethernet interfaces from /sys/class/net/.
+    // type==1 means ARPHRD_ETHER (ethernet). We skip loopback (lo) and
+    // virtual/wifi adapters (wl*, ww*).
+    // Returns list of: {iface, connected, ip, speed, mac}
+    FlValue* eth_list = fl_value_new_list();
+    char* ifaces_raw = shell_capture(
+      "for d in /sys/class/net/*/; do"
+      "  name=$(basename \"$d\");"
+      "  [ \"$name\" = lo ] && continue;"
+      "  type=$(cat \"$d/type\" 2>/dev/null) || continue;"
+      "  [ \"$type\" = 1 ] || continue;"
+      // skip wireless (they start with wl) and mobile (ww)
+      "  case \"$name\" in wl*|ww*) continue;; esac;"
+      "  state=$(cat \"$d/operstate\" 2>/dev/null);"
+      "  ip=$(ip -4 addr show \"$name\" 2>/dev/null"
+      "       | awk '/inet /{gsub(/\\/[0-9]+/,\"\",$2); print $2; exit}');"
+      "  spd=$(cat \"$d/speed\" 2>/dev/null 2>&1 || echo 0);"
+      "  mac=$(cat \"$d/address\" 2>/dev/null);"
+      "  printf '%s\\t%s\\t%s\\t%s\\t%s\\n' \"$name\" \"$state\" \"$ip\" \"$spd\" \"$mac\";"
+      "done"
+    );
+    if (ifaces_raw && strlen(ifaces_raw) > 0) {
+      char* line = strtok(ifaces_raw, "\n");
+      while (line) {
+        // Parse tab-separated: name \t state \t ip \t speed \t mac
+        char iface_name[64]={}, state[32]={}, ip[64]={}, spd_str[32]={}, mac[32]={};
+        sscanf(line, "%63[^\t]\t%31[^\t]\t%63[^\t]\t%31[^\t]\t%31[^\n]",
+               iface_name, state, ip, spd_str, mac);
+        if (strlen(iface_name) == 0) { line = strtok(nullptr, "\n"); continue; }
+        bool connected = (strcmp(state, "up") == 0);
+        int speed_mbps = atoi(spd_str);
+        // speed=-1 means unknown (cable present but link not negotiated)
+        if (speed_mbps < 0) speed_mbps = 0;
+
+        FlValue* ent = fl_value_new_map();
+        fl_value_set_string_take(ent, "iface",     fl_value_new_string(iface_name));
+        fl_value_set_string_take(ent, "connected", fl_value_new_bool(connected));
+        fl_value_set_string_take(ent, "ip",        fl_value_new_string(ip[0] ? ip : ""));
+        fl_value_set_string_take(ent, "speed",     fl_value_new_int(speed_mbps));
+        fl_value_set_string_take(ent, "mac",       fl_value_new_string(mac[0] ? mac : ""));
+        fl_value_append_take(eth_list, ent);
+        line = strtok(nullptr, "\n");
+      }
+    }
+    free(ifaces_raw);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(eth_list));
 
   // ── System info (CPU model, hostname, kernel, etc.) ───────────────────────
   } else if (strcmp(method, "system.info") == 0) {

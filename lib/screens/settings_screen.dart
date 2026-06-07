@@ -6,6 +6,7 @@ import '../core/settings_state.dart';
 import '../core/update_state.dart';
 import '../theme/app_theme.dart';
 import 'settings/dock_customization_screen.dart';
+import 'settings/monitors_settings.dart';
 import 'settings/display_settings.dart';
 import 'settings/network_settings.dart';
 import 'settings/security_settings.dart';
@@ -53,10 +54,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _NavItem(
           id: 'network',
           title: 'Network',
-          subtitle: 'WiFi, firewall, DNS, proxy',
+          subtitle: 'WiFi, Ethernet, firewall, DNS, proxy',
           icon: Icons.wifi_rounded,
           color: AppTheme.accent,
-          keywords: const ['internet', 'wifi', 'ethernet', 'dns', 'proxy', 'firewall', 'connection'],
+          keywords: const ['internet', 'wifi', 'ethernet', 'dns', 'proxy', 'firewall', 'connection', 'wired'],
+        ),
+        _NavItem(
+          id: 'monitors',
+          title: 'Displays & Monitors',
+          subtitle: 'Resolution, arrangement, refresh rate',
+          icon: Icons.desktop_windows_rounded,
+          color: const Color(0xFF00BCD4),
+          keywords: const ['monitor', 'display', 'resolution', 'hdmi', 'external', 'second screen', 'arrange', 'refresh', 'hz', 'multi'],
         ),
         _NavItem(
           id: 'security',
@@ -345,6 +354,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return NetworkSettingsScreen(initialTab: sub);
       case 'security':
         return SecuritySettingsScreen(initialTab: sub);
+      case 'monitors':
+        return const MonitorsSettingsScreen();
       case 'about':
         return const AboutScreen();
       case 'accessibility':

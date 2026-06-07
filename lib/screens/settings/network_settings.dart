@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../core/settings_state.dart';
 import '../../core/os_state.dart';
+import '../../core/platform/system_bridge.dart';
 import '../../theme/app_theme.dart';
 import 'multihop_vpn_screen.dart';
 
@@ -15,7 +18,7 @@ class NetworkSettingsScreen extends StatefulWidget {
 }
 
 class _NetworkSettingsScreenState extends State<NetworkSettingsScreen> {
-  late int _selectedTab = widget.initialTab.clamp(0, 3);
+  late int _selectedTab = widget.initialTab.clamp(0, 4);
   final TextEditingController _primaryDNSController = TextEditingController();
   final TextEditingController _secondaryDNSController = TextEditingController();
   final TextEditingController _proxyAddressController = TextEditingController();
@@ -44,10 +47,11 @@ class _NetworkSettingsScreenState extends State<NetworkSettingsScreen> {
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
                   children: [
-                    _buildSidebarChip(0, Icons.wifi_rounded, 'Wi‚¬-Fi'),
+                    _buildSidebarChip(0, Icons.wifi_rounded, 'Wi-Fi'),
+                    _buildSidebarChip(4, Icons.settings_ethernet_rounded, 'Ethernet'),
                     _buildSidebarChip(1, Icons.security_rounded, 'Firewall'),
                     _buildSidebarChip(2, Icons.dns_rounded, 'DNS'),
-                    _buildSidebarChip(3, Icons.settings_ethernet_rounded, 'Proxy'),
+                    _buildSidebarChip(3, Icons.lan_rounded, 'Proxy'),
                   ],
                 ),
               ),
@@ -108,9 +112,10 @@ class _NetworkSettingsScreenState extends State<NetworkSettingsScreen> {
       child: Column(
         children: [
           _buildSidebarItem(0, Icons.wifi_rounded, 'Wi-Fi'),
+          _buildSidebarItem(4, Icons.settings_ethernet_rounded, 'Ethernet'),
           _buildSidebarItem(1, Icons.security_rounded, 'Firewall'),
           _buildSidebarItem(2, Icons.dns_rounded, 'DNS'),
-          _buildSidebarItem(3, Icons.settings_ethernet_rounded, 'Proxy'),
+          _buildSidebarItem(3, Icons.lan_rounded, 'Proxy'),
         ],
       ),
     );
@@ -159,6 +164,8 @@ class _NetworkSettingsScreenState extends State<NetworkSettingsScreen> {
         return _buildDNSTab();
       case 3:
         return _buildProxyTab();
+      case 4:
+        return const _EthernetTab();
       default:
         return const SizedBox();
     }
@@ -739,6 +746,222 @@ class _NetworkSettingsScreenState extends State<NetworkSettingsScreen> {
           onChanged: onChanged,
         ),
       ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ethernet Tab — detects wired interfaces via platform channel
+// ─────────────────────────────────────────────────────────────────────────────
+class _EthernetTab extends StatefulWidget {
+  const _EthernetTab();
+
+  @override
+  State<_EthernetTab> createState() => _EthernetTabState();
+}
+
+class _EthernetTabState extends State<_EthernetTab> {
+  List<Map<String, dynamic>> _ifaces = [];
+  bool _loading = true;
+  Timer? _refreshTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+    // Auto-refresh every 5 s so plug/unplug events show immediately
+    _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) => _refresh());
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _refresh() async {
+    final list = await SystemBridge.ethernetList();
+    if (!mounted) return;
+    setState(() {
+      _ifaces = list;
+      _loading = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(24),
+      children: [
+        Row(
+          children: [
+            Text(
+              'Ethernet',
+              style: TextStyle(
+                color: AppTheme.textPrimary,
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const Spacer(),
+            GestureDetector(
+              onTap: () { setState(() => _loading = true); _refresh(); },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                decoration: BoxDecoration(
+                  color: AppTheme.accent,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(children: [
+                  Icon(_loading ? Icons.refresh_rounded : Icons.refresh_rounded,
+                      color: Colors.black, size: 18),
+                  const SizedBox(width: 8),
+                  Text(_loading ? 'Scanning...' : 'Refresh',
+                      style: const TextStyle(color: Colors.black, fontSize: 13, fontWeight: FontWeight.w600)),
+                ]),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Wired network interfaces detected on this device',
+          style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+        ),
+        const SizedBox(height: 24),
+
+        if (_loading)
+          Center(
+            child: Padding(
+              padding: const EdgeInsets.all(48),
+              child: CircularProgressIndicator(color: AppTheme.accent),
+            ),
+          )
+        else if (_ifaces.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(32),
+            decoration: BoxDecoration(
+              color: AppTheme.surface,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppTheme.border),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.settings_ethernet_rounded,
+                    size: 48, color: AppTheme.textSecondary.withValues(alpha: 0.4)),
+                const SizedBox(height: 16),
+                Text('No Ethernet Adapters Found',
+                    style: TextStyle(
+                        color: AppTheme.textPrimary,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600)),
+                const SizedBox(height: 8),
+                Text(
+                  'Plug in an Ethernet cable or check that the\n'
+                  'adapter is recognized by the kernel.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+                ),
+              ],
+            ),
+          )
+        else
+          ..._ifaces.map((iface) => _buildIfaceCard(iface)),
+      ],
+    );
+  }
+
+  Widget _buildIfaceCard(Map<String, dynamic> iface) {
+    final name = iface['iface'] as String? ?? '';
+    final connected = iface['connected'] as bool? ?? false;
+    final ip = iface['ip'] as String? ?? '';
+    final speed = iface['speed'] as int? ?? 0;
+    final mac = iface['mac'] as String? ?? '';
+
+    final speedLabel = speed > 0
+        ? (speed >= 1000 ? '${speed ~/ 1000} Gbps' : '$speed Mbps')
+        : 'Speed unknown';
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: connected
+            ? AppTheme.accent.withValues(alpha: 0.08)
+            : AppTheme.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: connected ? AppTheme.accent : AppTheme.border,
+          width: connected ? 2 : 1,
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              color: (connected ? AppTheme.accent : AppTheme.textSecondary)
+                  .withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(
+              Icons.settings_ethernet_rounded,
+              color: connected ? AppTheme.accent : AppTheme.textSecondary,
+              size: 26,
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  Text(name,
+                      style: TextStyle(
+                          color: connected ? AppTheme.accent : AppTheme.textPrimary,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600)),
+                  const SizedBox(width: 10),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: (connected
+                              ? const Color(0xFF3FB950)
+                              : AppTheme.textSecondary)
+                          .withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      connected ? 'Connected' : 'Disconnected',
+                      style: TextStyle(
+                          color: connected
+                              ? const Color(0xFF3FB950)
+                              : AppTheme.textSecondary,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ]),
+                const SizedBox(height: 4),
+                if (ip.isNotEmpty)
+                  Text('IP: $ip',
+                      style: TextStyle(
+                          color: AppTheme.textSecondary, fontSize: 12)),
+                if (mac.isNotEmpty)
+                  Text('MAC: $mac  •  $speedLabel',
+                      style: TextStyle(
+                          color: AppTheme.textSecondary, fontSize: 12)),
+                if (ip.isEmpty && mac.isEmpty)
+                  Text('No cable connected',
+                      style: TextStyle(
+                          color: AppTheme.textSecondary, fontSize: 12)),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

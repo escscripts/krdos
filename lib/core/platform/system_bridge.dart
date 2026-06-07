@@ -53,6 +53,17 @@ class SystemBridge {
     } catch (_) { return {}; }
   }
 
+  // - Ethernet -
+
+  /// List wired (Ethernet) interfaces: {iface, connected, ip, speed, mac}
+  static Future<List<Map<String, dynamic>>> ethernetList() async {
+    if (!_live) return [];
+    try {
+      final r = await _ch.invokeListMethod<Map>('ethernet.list');
+      return r?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [];
+    } catch (_) { return []; }
+  }
+
   // - Bluetooth -
 
   static Future<bool> bluetoothEnable()  => _bool('bluetooth.enable');

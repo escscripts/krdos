@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../core/browser/browser_engine.dart';
 import '../../core/browser/browser_prefs.dart';
@@ -42,6 +43,10 @@ class BrowserScreen extends StatefulWidget {
 class _BrowserScreenState extends State<BrowserScreen>
     with TickerProviderStateMixin {
   late BrowserEngine _engine;
+
+  // Embedded WebView controller — renders actual web content on Linux via
+  // WebKit2GTK through the webview_flutter_linux plugin.
+  late final WebViewController _webViewController;
 
   // URL bar
   final TextEditingController _urlCtrl = TextEditingController();
@@ -80,6 +85,45 @@ class _BrowserScreenState extends State<BrowserScreen>
     _panelAnim = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 220));
     _panelSlide = CurvedAnimation(parent: _panelAnim, curve: Curves.easeOut);
+
+    // Initialise the embedded WebView (WebKit2GTK on Linux via webview_flutter)
+    _webViewController = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setNavigationDelegate(NavigationDelegate(
+        onPageStarted: (url) {
+          if (!mounted) return;
+          _engine.activeTab?.isLoading = true;
+          _engine.activeTab?.url = url;
+          if (!_urlFocus.hasFocus) {
+            _urlCtrl.text = _isBlankOrInternal(url) ? '' : url;
+          }
+          setState(() {});
+        },
+        onPageFinished: (url) async {
+          if (!mounted) return;
+          final title = await _webViewController.getTitle();
+          _engine.activeTab?.isLoading = false;
+          _engine.activeTab?.url = url;
+          _engine.activeTab?.title =
+              (title != null && title.isNotEmpty) ? title : _domainOf(url);
+          if (!_urlFocus.hasFocus) {
+            _urlCtrl.text = _isBlankOrInternal(url) ? '' : url;
+          }
+          setState(() {});
+        },
+        onProgress: (progress) {
+          if (!mounted) return;
+          _engine.activeTab?.progress = progress / 100.0;
+          setState(() {});
+        },
+        onWebResourceError: (error) {
+          if (!mounted) return;
+          _engine.activeTab?.isLoading = false;
+          setState(() {});
+        },
+        onNavigationRequest: (request) => NavigationDecision.navigate,
+      ))
+      ..loadRequest(Uri.parse('about:blank'));
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_loadPrefs());
@@ -182,6 +226,7 @@ class _BrowserScreenState extends State<BrowserScreen>
         _split = _SplitEntry(url, _domainOf(url));
         _splitUrlCtrl.text = url;
       });
+      // Split-view still opens externally (no second embedded WebView)
       await _launchUrl(url);
       return;
     }
@@ -189,7 +234,29 @@ class _BrowserScreenState extends State<BrowserScreen>
     final url = _normalise(raw);
     _urlCtrl.text = _isBlankOrInternal(url) ? '' : url;
     setState(() {});
-    await _launchUrl(raw);
+    // Load in the embedded WebView — no external browser needed
+    if (!_isBlankOrInternal(url)) {
+      unawaited(_webViewController.loadRequest(Uri.parse(url)));
+    }
+  }
+
+  /// Go back in WebView history.
+  Future<void> _webBack() async {
+    if (await _webViewController.canGoBack()) {
+      await _webViewController.goBack();
+    }
+  }
+
+  /// Go forward in WebView history.
+  Future<void> _webForward() async {
+    if (await _webViewController.canGoForward()) {
+      await _webViewController.goForward();
+    }
+  }
+
+  /// Reload current WebView page.
+  Future<void> _webReload() async {
+    await _webViewController.reload();
   }
 
   String _domainOf(String url) {
@@ -727,13 +794,13 @@ class _BrowserScreenState extends State<BrowserScreen>
           border: Border(bottom: BorderSide(color: AppTheme.border, width: 0.8)),
         ),
         child: Row(children: [
-  // Back / Forward / Reload / Home
+  // Back / Forward / Reload / Home — wired to WebView navigation
           _navBtn(Icons.arrow_back_ios_new_rounded,
-              tab?.canGoBack ?? false, engine.goBack,
+              true, () => unawaited(_webBack()),
               tooltip: 'Back'),
           const SizedBox(width: 2),
           _navBtn(Icons.arrow_forward_ios_rounded,
-              tab?.canGoForward ?? false, engine.goForward,
+              true, () => unawaited(_webForward()),
               tooltip: 'Forward'),
           const SizedBox(width: 2),
           _navBtn(
@@ -745,8 +812,7 @@ class _BrowserScreenState extends State<BrowserScreen>
               if (tab?.isLoading ?? false) {
                 engine.stopLoading();
               } else {
-                engine.reload();
-                if (!_isBlankOrInternal(url)) unawaited(_launchUrl(url));
+                unawaited(_webReload());
               }
             },
             tooltip: tab?.isLoading ?? false ? 'Stop' : 'Reload  Ctrl+R',
@@ -1361,6 +1427,26 @@ class _BrowserScreenState extends State<BrowserScreen>
   // -
 
   Widget _buildUrlViewPanel(String url, String title, bool loading) {
+    // If an actual URL is loaded, show the embedded WebView (WebKit2GTK).
+    // The new tab / blank page still shows the link-preview panel below.
+    if (!_isBlankOrInternal(url)) {
+      return Stack(
+        children: [
+          WebViewWidget(controller: _webViewController),
+          if (loading)
+            Positioned(
+              top: 0, left: 0, right: 0,
+              child: LinearProgressIndicator(
+                value: _engine.activeTab?.progress,
+                backgroundColor: Colors.transparent,
+                valueColor: AlwaysStoppedAnimation(AppTheme.accent),
+                minHeight: 3,
+              ),
+            ),
+        ],
+      );
+    }
+
     final isHttps = url.startsWith('https://');
     final isHttp = url.startsWith('http://');
     final domain = _domainOf(url);
@@ -1566,10 +1652,10 @@ class _BrowserScreenState extends State<BrowserScreen>
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        'Flutter Linux desktop does not support an embedded '
-                        'WebView engine. KrdOS Browser manages your tabs, '
-                        'bookmarks, and history locally. Tap "Open in Browser" '
-                        'to view the page in Firefox or Chromium.',
+                        'Enter a URL or search term above and press Enter '
+                        'to browse with the built-in WebKit engine. '
+                        'Use "Open in Browser" to open the page in full '
+                        'Chromium instead.',
                         style: TextStyle(
                             color: AppTheme.textSecondary.withValues(
                                 alpha: 0.8),

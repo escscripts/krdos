@@ -36,7 +36,8 @@ jobs:
           libglib2.0-dev libpango1.0-dev libcairo2-dev \
           libatk1.0-dev libgdk-pixbuf-2.0-dev \
           libsecret-1-dev libjsoncpp-dev \
-          libssl-dev
+          libssl-dev \
+          libwebkit2gtk-4.0-dev
 
     # -----------------------------------------------------------------------
     # 3. Flutter SDK
