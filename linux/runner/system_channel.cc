@@ -7,161 +7,132 @@
 #include <stdlib.h>
 #include <string.h>
 
-// WebKit2GTK — embedded browser window
+// WebKit2GTK — embedded browser (GtkOverlay, no separate window)
 #include <webkit2/webkit2.h>
-#ifdef GDK_WINDOWING_X11
-#include <gdk/gdkx.h>
-#include <X11/Xlib.h>
-#endif
 
 static const char* kChannelName = "krdos/system";
 
 // ---------------------------------------------------------------------------
-// Embedded WebKit2GTK browser
+// Embedded WebKit2GTK browser — GtkOverlay architecture
 //
-// Architecture: X11 child-window embedding
-//   The WebKit GtkWindow is realized (X11 window created) then immediately
-//   reparented into the Flutter GtkWindow using XReparentWindow.  As a child
-//   of the Flutter X11 window the coordinates (x,y) passed from Dart are
-//   relative to the Flutter window — which is fullscreen at (0,0) — so they
-//   map directly to Flutter's RenderBox.localToGlobal values with zero math.
-//   No separate top-level positioning, no GTK/WM coordinate translation.
+// The Flutter GtkWindow's child (FlView) is wrapped inside a GtkOverlay.
+// WebKitWebView is added as an overlay child via gtk_overlay_add_overlay().
+// The "get-child-position" signal gives us precise pixel placement.
+// Coordinates from Flutter's RenderBox.localToGlobal map 1:1 to the overlay
+// coordinate space — no translation, no X11, no window manager involvement.
 // ---------------------------------------------------------------------------
 
 static FlPluginRegistrar* g_reg       = nullptr;
-static GtkWidget*         g_webwin    = nullptr;
+static GtkWidget*         g_overlay   = nullptr;  // GtkOverlay wrapping FlView
+static GtkWidget*         g_webwidget = nullptr;  // WebKitWebView as GTK widget
 static WebKitWebView*     g_webview   = nullptr;
-static bool               g_reparented = false;  // XReparentWindow done once
+static int g_web_x = 0, g_web_y = 0, g_web_w = 800, g_web_h = 600;
+
+// GtkOverlay signal: called during allocation to place each overlay child.
+static gboolean on_get_overlay_position(GtkOverlay*  /*overlay*/,
+                                         GtkWidget*    widget,
+                                         GdkRectangle* alloc,
+                                         gpointer      /*user_data*/) {
+  if (widget == g_webwidget) {
+    alloc->x      = g_web_x;
+    alloc->y      = g_web_y;
+    alloc->width  = (g_web_w < 10) ? 800 : g_web_w;
+    alloc->height = (g_web_h < 10) ? 600 : g_web_h;
+    return TRUE;   // TRUE → use our rect, not the default centering
+  }
+  return FALSE;
+}
 
 static GtkWindow* main_gtk_window() {
   if (!g_reg) return nullptr;
   GtkWidget* view = GTK_WIDGET(fl_plugin_registrar_get_view(g_reg));
   if (!view) return nullptr;
-  return GTK_WINDOW(gtk_widget_get_toplevel(view));
+  GtkWidget* top = gtk_widget_get_toplevel(view);
+  return GTK_IS_WINDOW(top) ? GTK_WINDOW(top) : nullptr;
 }
 
-static void webwin_ensure_created() {
-  if (g_webwin) return;
+// Wrap the Flutter window's child (FlView) in a GtkOverlay — idempotent.
+static void ensure_overlay() {
+  if (g_overlay) return;
+  GtkWindow* win = main_gtk_window();
+  if (!win) return;
+  GtkWidget* child = gtk_bin_get_child(GTK_BIN(win));
+  if (!child) return;
+  // Already wrapped (shouldn't happen, but guard anyway).
+  if (GTK_IS_OVERLAY(child)) { g_overlay = child; return; }
 
-  // Create a bare top-level window as the WebKit container.
-  // It will be reparented into the Flutter X11 window on first show.
-  g_webwin = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-  gtk_window_set_decorated(GTK_WINDOW(g_webwin), FALSE);
-  gtk_window_set_resizable(GTK_WINDOW(g_webwin), FALSE);
-  gtk_window_set_skip_taskbar_hint(GTK_WINDOW(g_webwin), TRUE);
-  gtk_window_set_skip_pager_hint(GTK_WINDOW(g_webwin), TRUE);
+  // GtkWindow → GtkOverlay → FlView
+  g_object_ref(child);
+  gtk_container_remove(GTK_CONTAINER(win), child);
+  g_overlay = gtk_overlay_new();
+  gtk_container_add(GTK_CONTAINER(g_overlay), child);   // FlView as base
+  g_object_unref(child);
+  gtk_container_add(GTK_CONTAINER(win), g_overlay);
+  gtk_widget_show(g_overlay);
+
+  g_signal_connect(g_overlay, "get-child-position",
+                   G_CALLBACK(on_get_overlay_position), nullptr);
+}
+
+// Create the WebKitWebView widget once (lazily on first browser open).
+static void webwin_ensure_created() {
+  if (g_webview) return;
+  ensure_overlay();
+  if (!g_overlay) return;
 
   WebKitSettings* ws = webkit_settings_new();
   webkit_settings_set_enable_javascript(ws, TRUE);
   webkit_settings_set_enable_webgl(ws, FALSE);
   webkit_settings_set_enable_media(ws, TRUE);
   webkit_settings_set_allow_file_access_from_file_urls(ws, FALSE);
+  // Chrome-compatible UA so sites don't send degraded content
   webkit_settings_set_user_agent(ws,
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 "
-    "(KHTML, like Gecko) KrdOS/1.0 Version/17.0 Safari/605.1.15");
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 KrdOS/1.0");
   webkit_settings_set_hardware_acceleration_policy(
     ws, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
 
-  g_webview = WEBKIT_WEB_VIEW(webkit_web_view_new_with_settings(ws));
+  g_webview   = WEBKIT_WEB_VIEW(webkit_web_view_new_with_settings(ws));
   g_object_unref(ws);
-  gtk_container_add(GTK_CONTAINER(g_webwin), GTK_WIDGET(g_webview));
+  g_webwidget = GTK_WIDGET(g_webview);
 
-  // Realize creates the underlying X11 window without mapping it.
-  gtk_widget_realize(g_webwin);
-
-#ifdef GDK_WINDOWING_X11
-  // Set override_redirect so the WM never manages this window.
-  GdkWindow* gdk_win = gtk_widget_get_window(g_webwin);
-  if (gdk_win && GDK_IS_X11_WINDOW(gdk_win))
-    gdk_window_set_override_redirect(gdk_win, TRUE);
-#endif
+  // Add as overlay child; keep it hidden until first navigation.
+  gtk_overlay_add_overlay(GTK_OVERLAY(g_overlay), g_webwidget);
+  // no_show_all: prevents gtk_widget_show_all() on the window from
+  // accidentally revealing the browser when no URL is loaded.
+  gtk_widget_set_no_show_all(g_webwidget, TRUE);
+  gtk_widget_hide(g_webwidget);
 }
 
-// Show and position the WebKit window covering the content-area rect.
-// x/y are Flutter logical-pixel coords from RenderBox.localToGlobal.
-// After reparenting into the Flutter X11 window those coords are correct
-// with no further translation.
+// Show the WebKit overlay at the specified content-area rect.
 static void webwin_show(int x, int y, int w, int h) {
   if (w < 10) w = 800;
   if (h < 10) h = 600;
   webwin_ensure_created();
-
-#ifdef GDK_WINDOWING_X11
-  GtkWindow*  parent     = main_gtk_window();
-  GdkWindow*  gdk_parent = parent
-                           ? gtk_widget_get_window(GTK_WIDGET(parent))
-                           : nullptr;
-  GdkWindow*  gdk_webkit = gtk_widget_get_window(g_webwin);
-
-  if (!g_reparented && gdk_parent && gdk_webkit &&
-      GDK_IS_X11_WINDOW(gdk_parent) && GDK_IS_X11_WINDOW(gdk_webkit)) {
-    Display* dpy      = GDK_DISPLAY_XDISPLAY(gdk_window_get_display(gdk_parent));
-    Window   xparent  = GDK_WINDOW_XID(gdk_parent);
-    Window   xwebkit  = GDK_WINDOW_XID(gdk_webkit);
-    // Reparent into the Flutter window — coordinates now relative to it.
-    XReparentWindow(dpy, xwebkit, xparent, x, y);
-    XResizeWindow(dpy, xwebkit, (unsigned)w, (unsigned)h);
-    XFlush(dpy);
-    g_reparented = true;
-    // Let GTK map the widget (it's now a child window).
-    gtk_widget_show_all(g_webwin);
-    XRaiseWindow(dpy, xwebkit);
-    XFlush(dpy);
-    return;
-  }
-
-  if (g_reparented && gdk_webkit && GDK_IS_X11_WINDOW(gdk_webkit)) {
-    Display* dpy     = GDK_DISPLAY_XDISPLAY(gdk_window_get_display(gdk_webkit));
-    Window   xwebkit = GDK_WINDOW_XID(gdk_webkit);
-    XMoveResizeWindow(dpy, xwebkit, x, y, (unsigned)w, (unsigned)h);
-    XMapRaised(dpy, xwebkit);
-    XFlush(dpy);
-    return;
-  }
-#endif
-  // Wayland / fallback path.
-  gtk_window_move(GTK_WINDOW(g_webwin), x, y);
-  gtk_window_resize(GTK_WINDOW(g_webwin), w, h);
-  gtk_widget_show_all(g_webwin);
-  gtk_window_present(GTK_WINDOW(g_webwin));
+  if (!g_webwidget) return;
+  g_web_x = x; g_web_y = y; g_web_w = w; g_web_h = h;
+  gtk_widget_set_size_request(g_webwidget, w, h);
+  gtk_widget_show(g_webwidget);
+  gtk_widget_grab_focus(g_webwidget);
+  gtk_widget_queue_resize(g_overlay);
 }
 
-// Reposition the visible WebKit child window without navigating.
+// Reposition without navigating (window resize, panel open/close, etc.).
 static void webwin_reposition(int x, int y, int w, int h) {
-  if (!g_webwin) return;
+  if (!g_webwidget) return;
   if (w < 10) w = 800;
   if (h < 10) h = 600;
-#ifdef GDK_WINDOWING_X11
-  GdkWindow* gdk_webkit = gtk_widget_get_window(g_webwin);
-  if (g_reparented && gdk_webkit && GDK_IS_X11_WINDOW(gdk_webkit)) {
-    Display* dpy     = GDK_DISPLAY_XDISPLAY(gdk_window_get_display(gdk_webkit));
-    Window   xwebkit = GDK_WINDOW_XID(gdk_webkit);
-    XMoveResizeWindow(dpy, xwebkit, x, y, (unsigned)w, (unsigned)h);
-    XFlush(dpy);
-    return;
-  }
-#endif
-  gtk_window_move(GTK_WINDOW(g_webwin), x, y);
-  gtk_window_resize(GTK_WINDOW(g_webwin), w, h);
+  g_web_x = x; g_web_y = y; g_web_w = w; g_web_h = h;
+  gtk_widget_set_size_request(g_webwidget, w, h);
+  gtk_widget_queue_resize(g_overlay);
 }
 
-// Hide the WebKit child window.
+// Hide the WebKit overlay.
 static void webwin_hide() {
-  if (!g_webwin) return;
-#ifdef GDK_WINDOWING_X11
-  GdkWindow* gdk_webkit = gtk_widget_get_window(g_webwin);
-  if (g_reparented && gdk_webkit && GDK_IS_X11_WINDOW(gdk_webkit)) {
-    Display* dpy     = GDK_DISPLAY_XDISPLAY(gdk_window_get_display(gdk_webkit));
-    Window   xwebkit = GDK_WINDOW_XID(gdk_webkit);
-    XUnmapWindow(dpy, xwebkit);
-    XFlush(dpy);
-    return;
-  }
-#endif
-  gtk_widget_hide(g_webwin);
+  if (g_webwidget) gtk_widget_hide(g_webwidget);
 }
 
-// Navigate to url, applying https:// prefix / DuckDuckGo search as needed.
+// Navigate — apply https:// prefix or Google search as needed.
 static void webwin_navigate(const char* raw) {
   if (!g_webview || !raw || raw[0] == '\0') return;
 
@@ -171,14 +142,14 @@ static void webwin_navigate(const char* raw) {
     webkit_web_view_load_uri(g_webview, raw);
     return;
   }
-  // Bare domain? (contains a dot, no spaces)
+  // Bare domain? (has a dot, no spaces)
   if (strchr(raw, '.') && !strchr(raw, ' ')) {
     char buf[2048];
     snprintf(buf, sizeof(buf), "https://%s", raw);
     webkit_web_view_load_uri(g_webview, buf);
     return;
   }
-  // Everything else → DuckDuckGo search
+  // Everything else → Google search
   char encoded[2048] = {};
   size_t si = 0, di = 0;
   while (raw[si] && di < sizeof(encoded) - 4) {
@@ -195,7 +166,7 @@ static void webwin_navigate(const char* raw) {
     }
   }
   char url[2200];
-  snprintf(url, sizeof(url), "https://duckduckgo.com/?q=%s", encoded);
+  snprintf(url, sizeof(url), "https://www.google.com/search?q=%s", encoded);
   webkit_web_view_load_uri(g_webview, url);
 }
 
@@ -1845,11 +1816,11 @@ static void on_method_call(FlMethodChannel* /*channel*/,
     free(log);
     resp = FL_METHOD_RESPONSE(fl_method_success_response_new(s));
 
-  // ── Embedded WebKit2GTK browser ──────────────────────────────────────────
-  // All browser.webview_* methods operate on a single borderless GtkWindow
-  // that contains a WebKitWebView.  The window uses override-redirect so the
-  // window manager (matchbox) never fullscreens or decorates it.
-  // Flutter positions it below its own URL bar / nav chrome.
+  // ── Embedded WebKit2GTK browser (GtkOverlay) ────────────────────────────
+  // All browser.webview_* methods operate on the WebKitWebView overlay widget
+  // embedded directly inside the Flutter GtkWindow via GtkOverlay.
+  // No separate window, no X11 hacks — the overlay child is placed at the
+  // exact content-area rect supplied by Flutter's RenderBox.localToGlobal.
 
   } else if (strcmp(method, "browser.webview_show") == 0) {
     // Dart passes the exact content-area rect measured via RenderBox.localToGlobal

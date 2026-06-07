@@ -150,7 +150,7 @@ class _BrowserScreenState extends State<BrowserScreen>
     if (RegExp(r'^[a-zA-Z0-9.\-]+\.[a-z]{2,}(/.*)?$').hasMatch(t)) {
       return 'https://$t';
     }
-    return 'https://duckduckgo.com/?q=${Uri.encodeQueryComponent(t)}';
+    return 'https://www.google.com/search?q=${Uri.encodeQueryComponent(t)}';
   }
 
   Future<void> _launchUrl(String rawUrl) async {
