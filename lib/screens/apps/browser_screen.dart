@@ -6,7 +6,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../core/browser/browser_engine.dart';
 import '../../core/browser/browser_prefs.dart';
@@ -44,9 +43,13 @@ class _BrowserScreenState extends State<BrowserScreen>
     with TickerProviderStateMixin {
   late BrowserEngine _engine;
 
-  // Embedded WebView controller — renders actual web content on Linux via
-  // WebKit2GTK through the webview_flutter_linux plugin.
-  late final WebViewController _webViewController;
+  // Native WebKit2GTK window state (managed via system_channel.cc / C++).
+  // The C++ layer owns a borderless GtkWindow with override-redirect so
+  // matchbox never fullscreens it.  Flutter polls it at 500 ms intervals.
+  Timer?  _infoPoller;
+  bool    _nativeCanGoBack    = false;
+  bool    _nativeCanGoForward = false;
+  int     _toolbarHeightPx    = 94;   // updated by LayoutBuilder each frame
 
   // URL bar
   final TextEditingController _urlCtrl = TextEditingController();
@@ -86,44 +89,8 @@ class _BrowserScreenState extends State<BrowserScreen>
         vsync: this, duration: const Duration(milliseconds: 220));
     _panelSlide = CurvedAnimation(parent: _panelAnim, curve: Curves.easeOut);
 
-    // Initialise the embedded WebView (WebKit2GTK on Linux via webview_flutter)
-    _webViewController = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setNavigationDelegate(NavigationDelegate(
-        onPageStarted: (url) {
-          if (!mounted) return;
-          _engine.activeTab?.isLoading = true;
-          _engine.activeTab?.url = url;
-          if (!_urlFocus.hasFocus) {
-            _urlCtrl.text = _isBlankOrInternal(url) ? '' : url;
-          }
-          setState(() {});
-        },
-        onPageFinished: (url) async {
-          if (!mounted) return;
-          final title = await _webViewController.getTitle();
-          _engine.activeTab?.isLoading = false;
-          _engine.activeTab?.url = url;
-          _engine.activeTab?.title =
-              (title != null && title.isNotEmpty) ? title : _domainOf(url);
-          if (!_urlFocus.hasFocus) {
-            _urlCtrl.text = _isBlankOrInternal(url) ? '' : url;
-          }
-          setState(() {});
-        },
-        onProgress: (progress) {
-          if (!mounted) return;
-          _engine.activeTab?.progress = progress / 100.0;
-          setState(() {});
-        },
-        onWebResourceError: (error) {
-          if (!mounted) return;
-          _engine.activeTab?.isLoading = false;
-          setState(() {});
-        },
-        onNavigationRequest: (request) => NavigationDecision.navigate,
-      ))
-      ..loadRequest(Uri.parse('about:blank'));
+    // Native WebKit2GTK window is created lazily in C++ on the first
+    // browser.webview_show call.  Nothing to initialise here.
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_loadPrefs());
@@ -149,6 +116,8 @@ class _BrowserScreenState extends State<BrowserScreen>
 
   @override
   void dispose() {
+    _infoPoller?.cancel();
+    SystemBridge.browserWebViewHide(); // fire-and-forget — hides the GTK window
     _closeAcOverlay();
     _engine.removeListener(_onEngineUpdate);
     _engine.dispose();
@@ -226,7 +195,7 @@ class _BrowserScreenState extends State<BrowserScreen>
         _split = _SplitEntry(url, _domainOf(url));
         _splitUrlCtrl.text = url;
       });
-      // Split-view still opens externally (no second embedded WebView)
+      // Split-view opens externally for now (single native WebView window)
       await _launchUrl(url);
       return;
     }
@@ -234,30 +203,57 @@ class _BrowserScreenState extends State<BrowserScreen>
     final url = _normalise(raw);
     _urlCtrl.text = _isBlankOrInternal(url) ? '' : url;
     setState(() {});
-    // Load in the embedded WebView — no external browser needed
+
     if (!_isBlankOrInternal(url)) {
-      unawaited(_webViewController.loadRequest(Uri.parse(url)));
+      // Show the native WebKit window below Flutter's URL bar, then navigate.
+      await SystemBridge.browserWebViewShow(url, _toolbarHeightPx);
+      _startPoller();
+    } else {
+      // Blank / new-tab — hide the native window so the Flutter UI shows.
+      await SystemBridge.browserWebViewHide();
+      _infoPoller?.cancel();
     }
   }
 
-  /// Go back in WebView history.
-  Future<void> _webBack() async {
-    if (await _webViewController.canGoBack()) {
-      await _webViewController.goBack();
-    }
+  /// Start (or restart) the 500 ms polling timer that syncs URL / title /
+  /// loading state from the native WebKit window back into Flutter.
+  void _startPoller() {
+    _infoPoller?.cancel();
+    _infoPoller = Timer.periodic(const Duration(milliseconds: 500), (_) async {
+      if (!mounted) { _infoPoller?.cancel(); return; }
+      final info = await SystemBridge.browserWebViewGetInfo();
+      if (!mounted || info.isEmpty) return;
+      final url      = info['url']          as String? ?? '';
+      final title    = info['title']        as String? ?? '';
+      final canBack  = info['canGoBack']    as bool?   ?? false;
+      final canFwd   = info['canGoForward'] as bool?   ?? false;
+      final loading  = info['isLoading']    as bool?   ?? false;
+      final progress = (info['progress']    as num?)?.toDouble() ?? 0.0;
+      if (!mounted) return;
+      setState(() {
+        if (url.isNotEmpty) {
+          _engine.activeTab?.url = url;
+          if (!_urlFocus.hasFocus && !_isBlankOrInternal(url)) {
+            _urlCtrl.text = url;
+          }
+        }
+        if (title.isNotEmpty) _engine.activeTab?.title = title;
+        _engine.activeTab?.isLoading = loading;
+        _engine.activeTab?.progress  = progress;
+        _nativeCanGoBack    = canBack;
+        _nativeCanGoForward = canFwd;
+      });
+    });
   }
 
-  /// Go forward in WebView history.
-  Future<void> _webForward() async {
-    if (await _webViewController.canGoForward()) {
-      await _webViewController.goForward();
-    }
-  }
+  /// Go back in the native WebKit window.
+  Future<void> _webBack()    async => SystemBridge.browserWebViewBack();
 
-  /// Reload current WebView page.
-  Future<void> _webReload() async {
-    await _webViewController.reload();
-  }
+  /// Go forward in the native WebKit window.
+  Future<void> _webForward() async => SystemBridge.browserWebViewForward();
+
+  /// Reload in the native WebKit window.
+  Future<void> _webReload()  async => SystemBridge.browserWebViewReload();
 
   String _domainOf(String url) {
     try {
@@ -1427,24 +1423,35 @@ class _BrowserScreenState extends State<BrowserScreen>
   // -
 
   Widget _buildUrlViewPanel(String url, String title, bool loading) {
-    // If an actual URL is loaded, show the embedded WebView (WebKit2GTK).
-    // The new tab / blank page still shows the link-preview panel below.
+    // If an actual URL is loaded, show a dark placeholder behind the native
+    // WebKit2GTK window.  The native window (override-redirect, borderless)
+    // is positioned by C++ to cover exactly this area below the Flutter toolbar.
+    // A LayoutBuilder measures the content area each frame so _toolbarHeightPx
+    // stays accurate even when the find bar / bookmarks bar is toggled.
     if (!_isBlankOrInternal(url)) {
-      return Stack(
-        children: [
-          WebViewWidget(controller: _webViewController),
-          if (loading)
-            Positioned(
-              top: 0, left: 0, right: 0,
-              child: LinearProgressIndicator(
-                value: _engine.activeTab?.progress,
-                backgroundColor: Colors.transparent,
-                valueColor: AlwaysStoppedAnimation(AppTheme.accent),
-                minHeight: 3,
+      return LayoutBuilder(builder: (ctx, constraints) {
+        // Screen height − content-area height = toolbar height in logical px.
+        final screenH = MediaQuery.of(ctx).size.height;
+        final dpr     = MediaQuery.of(ctx).devicePixelRatio;
+        _toolbarHeightPx =
+            ((screenH - constraints.maxHeight) * dpr).round().clamp(0, 400);
+        return Stack(
+          children: [
+            // Dark backdrop — the GTK WebKit window sits on top of this.
+            Container(color: const Color(0xFF0A0D12)),
+            if (loading)
+              Positioned(
+                top: 0, left: 0, right: 0,
+                child: LinearProgressIndicator(
+                  value: _engine.activeTab?.progress,
+                  backgroundColor: Colors.transparent,
+                  valueColor: AlwaysStoppedAnimation(AppTheme.accent),
+                  minHeight: 3,
+                ),
               ),
-            ),
-        ],
-      );
+          ],
+        );
+      });
     }
 
     final isHttps = url.startsWith('https://');

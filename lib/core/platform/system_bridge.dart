@@ -320,9 +320,67 @@ class SystemBridge {
 
   // - Browser -
 
+  /// Open a URL in an external browser process (right-click → open external).
   static Future<void> browserOpen({String url = 'about:blank'}) async {
     if (!_live) return;
     await _ch.invokeMethod<void>('browser.open', {'url': url});
+  }
+
+  // - Embedded WebKit2GTK browser window -
+  // The C++ layer maintains a single borderless GtkWindow with override-redirect
+  // (so matchbox WM never fullscreens it) positioned below Flutter's URL bar.
+
+  /// Show the native WebKit window at (x=0, y=toolbarHeightPx) and load [url].
+  static Future<void> browserWebViewShow(String url, int toolbarHeightPx) async {
+    if (!_live) return;
+    try {
+      await _ch.invokeMethod<void>('browser.webview_show', {
+        'url': url,
+        'toolbar_height': toolbarHeightPx,
+      });
+    } catch (_) {}
+  }
+
+  /// Hide the native WebKit window (kept in memory for fast re-show).
+  static Future<void> browserWebViewHide() async {
+    if (!_live) return;
+    try { await _ch.invokeMethod<void>('browser.webview_hide'); } catch (_) {}
+  }
+
+  /// Navigate the embedded WebKit window to [url] (normalised in C++).
+  static Future<void> browserWebViewNavigate(String url) async {
+    if (!_live) return;
+    try { await _ch.invokeMethod<void>('browser.webview_navigate', url); } catch (_) {}
+  }
+
+  static Future<void> browserWebViewBack()    async {
+    if (!_live) return;
+    try { await _ch.invokeMethod<void>('browser.webview_back'); } catch (_) {}
+  }
+
+  static Future<void> browserWebViewForward() async {
+    if (!_live) return;
+    try { await _ch.invokeMethod<void>('browser.webview_forward'); } catch (_) {}
+  }
+
+  static Future<void> browserWebViewReload()  async {
+    if (!_live) return;
+    try { await _ch.invokeMethod<void>('browser.webview_reload'); } catch (_) {}
+  }
+
+  static Future<void> browserWebViewStop()    async {
+    if (!_live) return;
+    try { await _ch.invokeMethod<void>('browser.webview_stop'); } catch (_) {}
+  }
+
+  /// Poll current browser state: url, title, canGoBack, canGoForward,
+  /// isLoading, progress (0.0–1.0).  Returns {} if no WebView is active.
+  static Future<Map<String, dynamic>> browserWebViewGetInfo() async {
+    if (!_live) return {};
+    try {
+      final r = await _ch.invokeMethod<Map>('browser.webview_get_info');
+      return r != null ? Map<String, dynamic>.from(r) : {};
+    } catch (_) { return {}; }
   }
 
   // - Software Updates -

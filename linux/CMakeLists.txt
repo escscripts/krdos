@@ -52,7 +52,10 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 
 # System-level dependencies.
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk+-3.0)
+pkg_check_modules(GTK    REQUIRED IMPORTED_TARGET gtk+-3.0)
+# WebKit2GTK — used directly in system_channel.cc for the embedded browser.
+# Build dep: libwebkit2gtk-4.0-dev  |  Runtime dep: libwebkit2gtk-4.0-0
+pkg_check_modules(WEBKIT REQUIRED IMPORTED_TARGET webkit2gtk-4.0)
 
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")
