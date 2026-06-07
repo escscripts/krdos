@@ -86,16 +86,28 @@ static void webwin_show(int toolbar_h) {
 
   GtkWindow* parent = main_gtk_window();
   int sw = 1920, sh = 1080;
-  if (parent) gtk_window_get_size(parent, &sw, &sh);
 
-  // Fallback: use GDK screen dimensions (more reliable when fullscreen).
+  // Use primary monitor geometry — accurate even when the GTK window is
+  // fullscreen (gtk_window_get_size returns the pre-fullscreen size on some WMs).
   if (g_reg) {
     GtkWidget* view = GTK_WIDGET(fl_plugin_registrar_get_view(g_reg));
     if (view) {
-      GdkScreen* scr = gtk_widget_get_screen(view);
-      if (scr) { sw = gdk_screen_get_width(scr); sh = gdk_screen_get_height(scr); }
+      GdkDisplay* dpy = gtk_widget_get_display(view);
+      if (dpy) {
+        GdkMonitor* mon = gdk_display_get_primary_monitor(dpy);
+        if (!mon && gdk_display_get_n_monitors(dpy) > 0)
+          mon = gdk_display_get_monitor(dpy, 0);
+        if (mon) {
+          GdkRectangle geo;
+          gdk_monitor_get_geometry(mon, &geo);
+          sw = geo.width;
+          sh = geo.height;
+        }
+      }
     }
   }
+  // Final fallback: read from the GtkWindow itself.
+  if ((sw <= 0 || sh <= 0) && parent) gtk_window_get_size(parent, &sw, &sh);
 
   int content_h = sh - g_toolbar_h;
   if (content_h < 100) content_h = 100;
