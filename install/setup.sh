@@ -720,6 +720,13 @@ level=WARN
 NMCONF
 systemctl enable NetworkManager      && ok "NetworkManager enabled"    || warn "NM enable failed"
 systemctl enable NetworkManager-dispatcher 2>/dev/null || true
+# Also START it immediately so WiFi works right now without a reboot
+systemctl start NetworkManager 2>/dev/null || true
+sleep 2
+nmcli radio wifi on 2>/dev/null || true
+# Unblock all RF devices (rfkill block sometimes survives across installs)
+rfkill unblock all 2>/dev/null || true
+ok "NetworkManager started — WiFi radio unblocked"
 
 # Bluetooth
 mkdir -p /etc/bluetooth
@@ -850,21 +857,37 @@ if [[ -z "$CONF_TOKEN" ]]; then
   warn "  → Public repos work without a token."
 fi
 
-# Install the update script — either from the USB/overlay or a bundled copy
+# Install the update script — priority order:
+#   1. krdos-update.sh next to this script (USB / manual install)
+#   2. Existing non-stub /usr/local/bin/krdos-update (keep it — don't regress)
+#   3. Download from GitHub releases if internet is reachable
+#   4. Last resort: install the stub
+_install_krdos_update_stub() {
+  cat > /usr/local/bin/krdos-update <<'UPDATE_STUB'
+#!/bin/bash
+echo "krdos-update: not configured."
+echo "Install the real script: curl -fsSL https://github.com/escscripts/krdos/releases/latest/download/krdos-update.sh -o /usr/local/bin/krdos-update && chmod +x /usr/local/bin/krdos-update"
+UPDATE_STUB
+  chmod +x /usr/local/bin/krdos-update
+  warn "krdos-update stub installed (no internet, no bundled script)."
+}
+
 if [[ -f "$SCRIPT_DIR/krdos-update.sh" ]]; then
   cp "$SCRIPT_DIR/krdos-update.sh" /usr/local/bin/krdos-update
   chmod +x /usr/local/bin/krdos-update
   ok "krdos-update installed from $SCRIPT_DIR/krdos-update.sh"
+elif [[ -f /usr/local/bin/krdos-update ]] && ! grep -q "not configured" /usr/local/bin/krdos-update 2>/dev/null; then
+  ok "krdos-update already installed (non-stub) — not overwritten"
+elif curl -sfI --max-time 5 "https://api.github.com" >/dev/null 2>&1; then
+  info "Internet reachable — downloading krdos-update.sh from GitHub..."
+  curl -fsSL --max-time 30 \
+    "https://github.com/escscripts/krdos/releases/latest/download/krdos-update.sh" \
+    -o /usr/local/bin/krdos-update \
+    && chmod +x /usr/local/bin/krdos-update \
+    && ok "krdos-update downloaded from GitHub releases" \
+    || { warn "Download failed."; _install_krdos_update_stub; }
 else
-  # Fallback: write a minimal stub that tells the user to configure the repo
-  cat > /usr/local/bin/krdos-update <<'UPDATE_STUB'
-#!/bin/bash
-echo "krdos-update: not configured."
-echo "Edit /usr/local/bin/krdos-update and set GITHUB_REPO to your repo."
-echo "Then re-run setup.sh or install the full krdos-update.sh from your repo."
-UPDATE_STUB
-  chmod +x /usr/local/bin/krdos-update
-  warn "krdos-update stub installed — set GITHUB_REPO in the script."
+  _install_krdos_update_stub
 fi
 
 # Systemd timer: check for updates once per day at 03:00 (when plugged in / WiFi ready)
