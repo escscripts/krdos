@@ -8,6 +8,12 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+# Only one release job at a time.  When a new push arrives while a build is
+# running, cancel the old build so the latest commit always wins.
+concurrency:
+  group: release
+  cancel-in-progress: true
+
 # Give the workflow write access to repo contents so it can create releases.
 # Without this, GITHUB_TOKEN cannot create tags or releases.
 permissions:
@@ -114,20 +120,39 @@ jobs:
     # -----------------------------------------------------------------------
     - name: Publish GitHub release
       run: |
+        set -euo pipefail
         VERSION="${{ steps.ver.outputs.VERSION }}"
 
+        # Delete old release + tag; give the API 3 s to process the deletion
+        # before we try to recreate (avoids "tag already exists" races when
+        # multiple CI jobs run back-to-back).
         gh release delete latest --yes 2>/dev/null || true
         git push origin :refs/tags/latest 2>/dev/null || true
+        sleep 3
 
-        gh release create latest \
-          --title "KrdOS latest (${VERSION})" \
-          --notes-file /tmp/release-notes.md \
-          --latest \
-          build/linux/x64/release/krdos-bundle.tar.gz \
-          build/linux/x64/release/krdos-bundle.tar.gz.sha256 \
-          install/setup.sh \
-          install/krdos-update.sh \
-          install/krdos-offline-update.sh \
-          VERSION
+        # Retry up to 3 times in case of transient API errors.
+        for attempt in 1 2 3; do
+          gh release create latest \
+            --title "KrdOS latest (${VERSION})" \
+            --notes-file /tmp/release-notes.md \
+            --latest \
+            build/linux/x64/release/krdos-bundle.tar.gz \
+            build/linux/x64/release/krdos-bundle.tar.gz.sha256 \
+            install/setup.sh \
+            install/krdos-update.sh \
+            install/krdos-offline-update.sh \
+            VERSION \
+          && break \
+          || {
+            echo "Release create attempt $attempt failed — retrying in 5s…"
+            sleep 5
+            # If tag already exists from a previous attempt, delete it first
+            gh release delete latest --yes 2>/dev/null || true
+            git push origin :refs/tags/latest 2>/dev/null || true
+            sleep 3
+          }
+        done
+
+        echo "Release published: KrdOS latest (${VERSION})"
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
