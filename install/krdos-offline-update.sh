@@ -197,6 +197,15 @@ ls -dt /opt/customos-backup-* 2>/dev/null | tail -n +4 | xargs rm -rf 2>/dev/nul
 # launcher was pointing to a different directory.
 cat > /usr/local/bin/krdos-ui <<WRAPPER
 #!/bin/bash
+export HOME=/root
+export DISPLAY=\${DISPLAY:-:0}
+export XDG_RUNTIME_DIR=/run/user/0
+export KRDOS_SHELL=1
+export GDK_BACKEND=x11
+export CLUTTER_BACKEND=x11
+export XCURSOR_THEME=DMZ-White
+export XCURSOR_SIZE=24
+export FONTCONFIG_PATH=/etc/fonts
 export LD_LIBRARY_PATH="${INSTALL_DIR}/lib:\$LD_LIBRARY_PATH"
 cd "${INSTALL_DIR}"
 exec "${INSTALL_DIR}/krdos" "\$@"

@@ -409,8 +409,8 @@ class OsState extends ChangeNotifier {
   // - Notifications -
   final List<OsNotification> _notifications = [
     OsNotification(id: '1', title: 'System', body: 'All services running normally', type: NotifType.system, time: DateTime.now()),
-    OsNotification(id: '2', title: 'Security', body: 'Firewall active ? 0 threats detected', type: NotifType.security, time: DateTime.now()),
-    OsNotification(id: '3', title: 'Network', body: 'Connected ? IP masked', type: NotifType.network, time: DateTime.now()),
+    OsNotification(id: '2', title: 'Security', body: 'Firewall active • 0 threats detected', type: NotifType.security, time: DateTime.now()),
+    OsNotification(id: '3', title: 'Network', body: 'Connected • IP masked', type: NotifType.network, time: DateTime.now()),
   ];
 
   List<OsNotification> get notifications => List.unmodifiable(_notifications);

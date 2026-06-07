@@ -1037,16 +1037,26 @@ static void on_method_call(FlMethodChannel* /*channel*/,
       int colons = 0;
       for (char* q = copy; *q; q++) if (*q == ':') colons++;
       if (colons < 3) { line = strtok(nullptr, "\n"); continue; }
-      // Walk forward to find the 3rd-from-last colon
+      // Walk forward to find the 3rd-from-last colon.
+      // needed = number of colons inside the SSID itself.
       int needed = colons - 3;
-      char* split = copy;
-      for (int c = 0; c < needed && *split; split++)
-        if (*split == ':') c++;
-      // split now points just past the ssid (which may have had colons)
-      char* ssid_end = split - 1; // the colon before signal
-      // Overwrite ssid_end with \0 to terminate ssid
-      if (ssid_end > copy) *ssid_end = '\0';
       char* ssid = copy;
+      char* split;
+      if (needed == 0) {
+        // Common case: SSID has no colons — split at first ':'.
+        char* first_colon = strchr(copy, ':');
+        if (!first_colon) { line = strtok(nullptr, "\n"); continue; }
+        *first_colon = '\0';
+        split = first_colon + 1;
+      } else {
+        // SSID contains 'needed' colons: skip them from the left.
+        split = copy;
+        for (int c = 0; c < needed && *split; split++)
+          if (*split == ':') c++;
+        // split now points just past the ssid separator colon
+        char* ssid_end = split - 1;
+        if (ssid_end > copy) *ssid_end = '\0';
+      }
       char signal_s[16]="0", security[64]="", inuse[4]="";
       sscanf(split, "%15[^:]:%63[^:]:%3s", signal_s, security, inuse);
       // Skip empty SSIDs (hidden networks)

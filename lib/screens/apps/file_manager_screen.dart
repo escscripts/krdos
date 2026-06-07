@@ -38,10 +38,22 @@ class FsEntry {
       isDir: (m['is_dir'] as bool?) ?? false,
       isLink: (m['is_link'] as bool?) ?? false,
       size: (m['size'] as num?)?.toInt() ?? 0,
-      modified: m['modified'] != null
-          ? DateTime.fromMillisecondsSinceEpoch(
-              ((m['modified'] as num).toInt()) * 1000)
-          : DateTime.now(),
+      modified: () {
+        final mod = m['modified'];
+        if (mod == null) return DateTime.now();
+        // C++ sends modified as a Unix-epoch STRING (ls --time-style=+%s).
+        // Guard against num too in case future C++ change returns int directly.
+        int? epoch;
+        if (mod is num) {
+          epoch = mod.toInt();
+        } else if (mod is String) {
+          epoch = int.tryParse(mod.trim());
+        }
+        if (epoch != null && epoch > 0) {
+          return DateTime.fromMillisecondsSinceEpoch(epoch * 1000);
+        }
+        return DateTime.now();
+      }(),
       owner: (m['owner'] as String?) ?? 'root',
       perms: (m['perms'] as String?) ?? '----------',
     );
