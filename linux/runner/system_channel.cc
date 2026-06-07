@@ -1914,11 +1914,12 @@ static void on_method_call(FlMethodChannel* /*channel*/,
     resp = FL_METHOD_RESPONSE(fl_method_success_response_new(map));
 
   } else if (strcmp(method, "browser.cookies_clear") == 0) {
-    // Delete all cookies stored in the default WebKit cookie manager.
+    // Clear all cookies via WebsiteDataManager (WebKit2GTK 4.1 API).
     if (g_webview) {
-      WebKitWebContext* ctx = webkit_web_view_get_context(g_webview);
-      WebKitCookieManager* cm = webkit_web_context_get_cookie_manager(ctx);
-      webkit_cookie_manager_delete_all_cookies(cm);
+      WebKitWebContext*       ctx = webkit_web_view_get_context(g_webview);
+      WebKitWebsiteDataManager* dm = webkit_web_context_get_website_data_manager(ctx);
+      webkit_website_data_manager_clear(dm, WEBKIT_WEBSITE_DATA_COOKIES,
+                                        0, nullptr, nullptr, nullptr);
     }
     resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(TRUE)));
 
@@ -1937,8 +1938,11 @@ static void on_method_call(FlMethodChannel* /*channel*/,
         }
       }
       if (script && script[0]) {
-        webkit_web_view_run_javascript(g_webview, script,
-                                       nullptr, nullptr, nullptr);
+        // webkit_web_view_evaluate_javascript is the 4.1 replacement for
+        // webkit_web_view_run_javascript. Pass -1 for null-terminated length.
+        webkit_web_view_evaluate_javascript(g_webview, script, -1,
+                                            nullptr, nullptr,
+                                            nullptr, nullptr, nullptr);
       }
     }
     resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(TRUE)));
