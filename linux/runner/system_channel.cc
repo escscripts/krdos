@@ -2712,7 +2712,7 @@ void system_channel_init(FlPluginRegistry* registry) {
   //           the instant the kernel detects a connector plug/unplug.
   FlEventChannel* hp_channel = fl_event_channel_new(
       messenger, kHotplugChannelName, FL_METHOD_CODEC(codec));
-  fl_event_channel_set_stream_handler(
+  fl_event_channel_set_stream_handlers(
       hp_channel, hotplug_on_listen, hotplug_on_cancel, nullptr, nullptr);
   g_hotplug_channel = FL_EVENT_CHANNEL(g_object_ref(hp_channel));
 }
