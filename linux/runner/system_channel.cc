@@ -82,6 +82,8 @@ static gboolean webview_block_fullscreen(WebKitWebView* /*wv*/, gpointer /*ud*/)
 static void webwin_ensure_created() {
   if (g_webwin) return;
 
+  fprintf(stderr, "[browser] webwin_ensure_created: start\n");
+
   // Undecorated, borderless container for WebKit.
   g_webwin = gtk_window_new(GTK_WINDOW_TOPLEVEL);
   gtk_window_set_decorated(GTK_WINDOW(g_webwin), FALSE);
@@ -101,6 +103,13 @@ static void webwin_ensure_created() {
   webkit_settings_set_hardware_acceleration_policy(
     ws, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
 
+  // Disable WebKit's process sandbox — Kali Linux's hardened kernel blocks
+  // the seccomp/setuid-sandbox that WebKit's web process requires by default.
+  // Must be called before any web process is spawned (i.e. before first load).
+  WebKitWebContext* ctx = webkit_web_context_get_default();
+  webkit_web_context_set_sandbox_enabled(ctx, FALSE);
+  fprintf(stderr, "[browser] sandbox disabled on default context\n");
+
   g_webview = WEBKIT_WEB_VIEW(webkit_web_view_new_with_settings(ws));
   g_object_unref(ws);
 
@@ -115,28 +124,47 @@ static void webwin_ensure_created() {
   gtk_container_add(GTK_CONTAINER(g_webwin), GTK_WIDGET(g_webview));
   gtk_widget_show(GTK_WIDGET(g_webview));
 
-  // Realize (creates the X11 window) but do NOT map (do NOT call gtk_widget_show
-  // on g_webwin — we use XMapWindow so it maps as a child of Flutter's window).
+  // Realize (creates the X11 window hierarchy) but do NOT map (do NOT call
+  // gtk_widget_show on g_webwin — we use XMapWindow so it maps as a child of
+  // Flutter's X11 window). NOTE: realize does NOT map child widgets; we must
+  // call XMapSubwindows separately after XMapWindow to map WebKit's drawing
+  // area windows, which are created but left unmapped during realize-only.
   gtk_widget_realize(g_webwin);
+
+  Window wk_xw = webkit_xwindow();
+  fprintf(stderr, "[browser] realized: g_webwin xid=0x%lx g_webview=%p\n",
+          (unsigned long)wk_xw, (void*)g_webview);
 }
 
 // Show/navigate: embed WebKit into Flutter's X11 window and map it.
 static void webwin_show(int x, int y, int w, int h) {
   if (w < 10) w = 800;
   if (h < 10) h = 600;
+  fprintf(stderr, "[browser] webwin_show x=%d y=%d w=%d h=%d\n", x, y, w, h);
   webwin_ensure_created();
-  if (!g_webwin) return;
+  if (!g_webwin) {
+    fprintf(stderr, "[browser] webwin_show: g_webwin is null, aborting\n");
+    return;
+  }
 
   g_web_x = x; g_web_y = y; g_web_w = w; g_web_h = h;
 
   Display* dpy   = x_display();
   Window   fl_xw = flutter_xwindow();
   Window   wk_xw = webkit_xwindow();
-  if (!dpy || !fl_xw || !wk_xw) return;
+  fprintf(stderr, "[browser] xids: dpy=%p fl_xw=0x%lx wk_xw=0x%lx\n",
+          (void*)dpy, (unsigned long)fl_xw, (unsigned long)wk_xw);
+
+  if (!dpy || !fl_xw || !wk_xw) {
+    fprintf(stderr, "[browser] webwin_show: null xid(s), aborting\n");
+    return;
+  }
 
   if (!g_reparented) {
     // First show: reparent into Flutter's window at content-area position.
     // Coordinates are Flutter-window-local (same as localToGlobal in Dart).
+    fprintf(stderr, "[browser] XReparentWindow: 0x%lx -> 0x%lx at (%d,%d)\n",
+            (unsigned long)wk_xw, (unsigned long)fl_xw, x, y);
     XReparentWindow(dpy, wk_xw, fl_xw, x, y);
     g_reparented = true;
   } else {
@@ -145,15 +173,22 @@ static void webwin_show(int x, int y, int w, int h) {
   }
 
   XResizeWindow(dpy, wk_xw, (unsigned)w, (unsigned)h);
-  XMapWindow(dpy, wk_xw);       // Map as child — always above parent GL content
+  XMapWindow(dpy, wk_xw);         // Map the container window
+  // CRITICAL: gtk_widget_realize only creates X11 windows, it does NOT map
+  // them. WebKit's internal GdkWindow (drawing area) is created but unmapped.
+  // XMapSubwindows recursively maps every child X11 window of wk_xw so the
+  // WebKit drawing surface becomes visible.
+  XMapSubwindows(dpy, wk_xw);
   XRaiseWindow(dpy, wk_xw);
   XFlush(dpy);
+  fprintf(stderr, "[browser] webwin_show: mapped+raised OK\n");
 
   gtk_widget_grab_focus(GTK_WIDGET(g_webview));
 }
 
 // Reposition/resize the already-visible embedded WebKit child window.
 static void webwin_reposition(int x, int y, int w, int h) {
+  fprintf(stderr, "[browser] webwin_reposition x=%d y=%d w=%d h=%d\n", x, y, w, h);
   if (!g_webwin || !g_reparented) return;
   if (w < 10) w = 800;
   if (h < 10) h = 600;
@@ -169,6 +204,7 @@ static void webwin_reposition(int x, int y, int w, int h) {
 
 // Unmap (hide) the embedded WebKit child window.
 static void webwin_hide() {
+  fprintf(stderr, "[browser] webwin_hide\n");
   if (!g_webwin || !g_reparented) return;
 
   Display* dpy   = x_display();
@@ -181,6 +217,8 @@ static void webwin_hide() {
 
 // Navigate — apply https:// prefix or Google search as needed.
 static void webwin_navigate(const char* raw) {
+  fprintf(stderr, "[browser] webwin_navigate: raw='%s' g_webview=%p\n",
+          raw ? raw : "(null)", (void*)g_webview);
   if (!g_webview || !raw || raw[0] == '\0') return;
 
   if (strncmp(raw, "http://",  7) == 0 ||
