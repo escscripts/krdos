@@ -574,6 +574,19 @@ class SystemBridge {
     } catch (_) { return []; }
   }
 
+  /// List configured Flatpak remotes. Each entry: {name, url}
+  static Future<List<Map<String, dynamic>>> flatpakListRemotes() async {
+    if (!_live) return [{'name': 'flathub', 'url': 'https://flathub.org/repo'}];
+    try {
+      final r = await _ch.invokeListMethod<Map>('flatpak.list_remotes');
+      return r?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [];
+    } catch (_) { return []; }
+  }
+
+  /// Add a Flatpak remote (e.g. flathub). Returns true on success.
+  static Future<bool> flatpakAddRemote(String name, String url) =>
+      _bool('flatpak.add_remote', args: {'name': name, 'url': url});
+
   // - Maintenance -
 
   static Future<bool> maintenanceRun() => _bool('maintenance.run');
@@ -696,6 +709,36 @@ class SystemBridge {
       {required bool allowed}) =>
       _bool('apps.set_network_flatpak',
           args: {'app_id': appId, 'allowed': allowed});
+
+  /// Search apt cache for packages matching [query].
+  /// Each entry: {id, name, desc}
+  static Future<List<Map<String, dynamic>>> appsSearchApt(String query) async {
+    if (!_live) return [];
+    try {
+      final r = await _ch.invokeListMethod<Map>('apps.search_apt',
+          {'query': query});
+      return r?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [];
+    } catch (_) { return []; }
+  }
+
+  /// Install a package by apt package name. Returns terminal output.
+  static Future<String> appsInstallApt(String package) async {
+    if (!_live) return 'not on Linux';
+    try {
+      return await _ch.invokeMethod<String>('apps.install_apt',
+          {'package': package}) ?? 'error';
+    } on PlatformException catch (e) { return e.message ?? 'error'; }
+  }
+
+  /// List enabled apt sources from /etc/apt/sources.list*.
+  /// Each entry: {uri, suite, components, enabled}
+  static Future<List<Map<String, dynamic>>> appsGetAptSources() async {
+    if (!_live) return [];
+    try {
+      final r = await _ch.invokeListMethod<Map>('apps.get_apt_sources');
+      return r?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [];
+    } catch (_) { return []; }
+  }
 
   // - Firewall (UFW) -
 

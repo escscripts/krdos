@@ -2203,6 +2203,130 @@ static void on_method_call(FlMethodChannel* /*channel*/,
       fl_value_new_string(out ? out : "")));
     if (out) free(out);
 
+  // ── Apps: search apt cache ────────────────────────────────────────────────
+  // Returns list of: {id, name, desc}  (top 40 matches)
+  } else if (strcmp(method, "apps.search_apt") == 0) {
+    const char* query = "";
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* v = fl_value_lookup_string(args, "query");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING)
+        query = fl_value_get_string(v);
+    }
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+      "apt-cache search '%s' 2>/dev/null | head -40", query);
+    char* raw = shell_capture(cmd);
+    FlValue* list = fl_value_new_list();
+    if (raw && strlen(raw) > 0) {
+      char* line = strtok(raw, "\n");
+      while (line) {
+        // Format: "package-name - description"
+        char* dash = strstr(line, " - ");
+        if (dash) {
+          char pkg[256]="";
+          size_t plen = (size_t)(dash - line);
+          if (plen >= sizeof(pkg)) plen = sizeof(pkg) - 1;
+          strncpy(pkg, line, plen); pkg[plen] = '\0';
+          const char* desc = dash + 3;
+          g_autoptr(FlValue) entry = fl_value_new_map();
+          fl_value_set_string_take(entry, "id",   fl_value_new_string(pkg));
+          fl_value_set_string_take(entry, "name", fl_value_new_string(pkg));
+          fl_value_set_string_take(entry, "desc", fl_value_new_string(desc));
+          fl_value_append_take(list, g_steal_pointer(&entry));
+        }
+        line = strtok(nullptr, "\n");
+      }
+    }
+    if (raw) free(raw);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(list));
+
+  // ── Apps: install via apt-get ─────────────────────────────────────────────
+  } else if (strcmp(method, "apps.install_apt") == 0) {
+    const char* pkg = "";
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* v = fl_value_lookup_string(args, "package");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING)
+        pkg = fl_value_get_string(v);
+    }
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+      "DEBIAN_FRONTEND=noninteractive apt-get install -y '%s' 2>&1 | tail -10", pkg);
+    char* out = shell_capture(cmd);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(
+      fl_value_new_string(out ? out : "error")));
+    if (out) free(out);
+
+  // ── Apps: list /etc/apt/sources.list entries ──────────────────────────────
+  // Returns list of: {uri, suite, components, enabled}
+  } else if (strcmp(method, "apps.get_apt_sources") == 0) {
+    char* raw = shell_capture(
+      "grep -rh '^\\(#\\s*\\)\\?deb ' /etc/apt/sources.list"
+      " /etc/apt/sources.list.d/ 2>/dev/null");
+    FlValue* list = fl_value_new_list();
+    if (raw && strlen(raw) > 0) {
+      char* line = strtok(raw, "\n");
+      while (line) {
+        bool enabled = (line[0] != '#');
+        // Skip leading '# ' if disabled
+        const char* p = line;
+        while (*p == '#' || *p == ' ') p++;
+        // Parse: deb [opts] URI suite components...
+        if (strncmp(p, "deb ", 4) != 0) { line = strtok(nullptr, "\n"); continue; }
+        p += 4;
+        // Skip optional [options]
+        if (*p == '[') { while (*p && *p != ']') p++; if (*p) p++; while (*p == ' ') p++; }
+        // URI
+        char uri[256]="", suite[128]="", comps[256]="";
+        sscanf(p, "%255s %127s %255[^\n]", uri, suite, comps);
+        g_autoptr(FlValue) entry = fl_value_new_map();
+        fl_value_set_string_take(entry, "uri",        fl_value_new_string(uri));
+        fl_value_set_string_take(entry, "suite",      fl_value_new_string(suite));
+        fl_value_set_string_take(entry, "components", fl_value_new_string(comps));
+        fl_value_set_string_take(entry, "enabled",    fl_value_new_bool(enabled));
+        fl_value_append_take(list, g_steal_pointer(&entry));
+        line = strtok(nullptr, "\n");
+      }
+    }
+    if (raw) free(raw);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(list));
+
+  // ── Flatpak: list remotes ─────────────────────────────────────────────────
+  // Returns list of: {name, url}
+  } else if (strcmp(method, "flatpak.list_remotes") == 0) {
+    char* raw = shell_capture(
+      "flatpak remotes --columns=name,url 2>/dev/null");
+    FlValue* list = fl_value_new_list();
+    if (raw && strlen(raw) > 0) {
+      char* line = strtok(raw, "\n");
+      while (line) {
+        char name[128]="", url[512]="";
+        if (sscanf(line, "%127s %511[^\n]", name, url) >= 1 && strlen(name) > 0) {
+          g_autoptr(FlValue) entry = fl_value_new_map();
+          fl_value_set_string_take(entry, "name", fl_value_new_string(name));
+          fl_value_set_string_take(entry, "url",  fl_value_new_string(url));
+          fl_value_append_take(list, g_steal_pointer(&entry));
+        }
+        line = strtok(nullptr, "\n");
+      }
+    }
+    if (raw) free(raw);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(list));
+
+  // ── Flatpak: add remote ───────────────────────────────────────────────────
+  } else if (strcmp(method, "flatpak.add_remote") == 0) {
+    const char* name = "flathub", *url = "";
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* vn = fl_value_lookup_string(args, "name");
+      FlValue* vu = fl_value_lookup_string(args, "url");
+      if (vn && fl_value_get_type(vn) == FL_VALUE_TYPE_STRING) name = fl_value_get_string(vn);
+      if (vu && fl_value_get_type(vu) == FL_VALUE_TYPE_STRING) url  = fl_value_get_string(vu);
+    }
+    char cmd[768];
+    snprintf(cmd, sizeof(cmd),
+      "flatpak remote-add --if-not-exists --user '%s' '%s' 2>/dev/null", name, url);
+    bool ok = shell_ok(cmd);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(ok)));
+
   // ── Apps: toggle Flatpak network permission (flatpak override) ────────────
   // This is the one Flatpak permission that meaningfully maps to a network kill.
   // allowed=true  → flatpak override --user --share=network  <app_id>

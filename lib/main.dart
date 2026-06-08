@@ -16,6 +16,7 @@ import 'core/devices/device_registry.dart';
 import 'apps/meshcommand/core/mesh_engine.dart';
 import 'core/first_boot/first_boot_service.dart';
 import 'core/update_state.dart';
+import 'core/packages/package_core.dart';
 import 'screens/first_boot_screen.dart';
 import 'screens/system_init_screen.dart';
 import 'theme/app_theme.dart';
@@ -58,6 +59,7 @@ Future<void> main() async {
         ChangeNotifierProvider(create: (_) => VpnEngine()),
         ChangeNotifierProvider(create: (_) => VPNState()),
         ChangeNotifierProvider(create: (_) => DeviceRegistry()),
+        ChangeNotifierProvider.value(value: PackageCore.instance),
         ChangeNotifierProvider(create: (_) => MeshEngine()),
         ChangeNotifierProvider(
           create: (_) {
