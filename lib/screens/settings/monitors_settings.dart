@@ -60,18 +60,54 @@ class _MonitorsSettingsScreenState extends State<MonitorsSettingsScreen> {
   int? _dragging;
   bool _applying = false;
   String? _statusMsg;
+  Timer? _hotplugTimer;
+  Set<String> _knownOutputs = {};
 
   @override
   void initState() {
     super.initState();
     _detect();
+    // Poll every 8 seconds for newly connected/disconnected monitors
+    _hotplugTimer = Timer.periodic(const Duration(seconds: 8), (_) => _checkHotplug());
   }
+
+  @override
+  void dispose() {
+    _hotplugTimer?.cancel();
+    super.dispose();
+  }
+
+  /// Silent hotplug check — only reloads if connected outputs changed
+  Future<void> _checkHotplug() async {
+    if (_loading || _applying) return;
+    final raw = await SystemBridge.detectMonitors();
+    final newOutputs = raw
+        .where((m) => m['connected'] == true)
+        .map((m) => m['output']?.toString() ?? '')
+        .toSet();
+    if (!mounted) return;
+    if (!_setEquals(newOutputs, _knownOutputs)) {
+      // New monitor plugged in (or one removed) — reload full UI
+      _knownOutputs = newOutputs;
+      setState(() {
+        _monitors = raw.map(_Monitor.fromMap).toList();
+        _statusMsg = 'New display detected — review settings and apply.';
+      });
+    }
+  }
+
+  bool _setEquals(Set<String> a, Set<String> b) =>
+      a.length == b.length && a.every(b.contains);
 
   Future<void> _detect() async {
     setState(() { _loading = true; _statusMsg = null; });
     final raw = await SystemBridge.detectMonitors();
     setState(() {
       _monitors = raw.map(_Monitor.fromMap).toList();
+      _knownOutputs = _monitors
+          .where((m) => m.connected)
+          .map((m) => m.output)
+          .toSet();
       _loading = false;
     });
   }
@@ -232,10 +268,14 @@ class _MonitorsSettingsScreenState extends State<MonitorsSettingsScreen> {
       itemCount: _monitors.length,
       itemBuilder: (_, i) => _MonitorCard(
         monitor: _monitors[i],
-        onSetPrimary: () => setState(() {
-          for (final m in _monitors) m.primary = false;
-          _monitors[i].primary = true;
-        }),
+        onSetPrimary: () {
+          setState(() {
+            for (final m in _monitors) { m.primary = false; }
+            _monitors[i].primary = true;
+          });
+          // Auto-apply primary change immediately via xrandr
+          _apply();
+        },
         onToggleEnabled: () => setState(() => _monitors[i].enabled = !_monitors[i].enabled),
         onResolutionChanged: (r) => setState(() => _monitors[i].resolution = r),
         onRefreshChanged: (r) => setState(() => _monitors[i].refreshRate = r),

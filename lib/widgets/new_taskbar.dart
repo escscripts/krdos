@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -41,6 +43,11 @@ class _NewTaskbarState extends State<NewTaskbar> with SingleTickerProviderStateM
   late AnimationController _animController;
   late Animation<double> _fadeAnimation;
 
+  // Clock state
+  Timer? _clockTimer;
+  String _clockTime = '';
+  String _clockDate = '';
+
   @override
   void initState() {
     super.initState();
@@ -50,10 +57,26 @@ class _NewTaskbarState extends State<NewTaskbar> with SingleTickerProviderStateM
       duration: const Duration(milliseconds: 200),
     );
     _fadeAnimation = CurvedAnimation(parent: _animController, curve: Curves.easeOut);
+    _updateClock();
+    _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) => _updateClock());
+  }
+
+  void _updateClock() {
+    final now = DateTime.now();
+    final h = now.hour.toString().padLeft(2, '0');
+    final m = now.minute.toString().padLeft(2, '0');
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    setState(() {
+      _clockTime = '$h:$m';
+      _clockDate = '${days[now.weekday - 1]} ${now.day} ${months[now.month - 1]}';
+    });
   }
 
   @override
   void dispose() {
+    _clockTimer?.cancel();
     _searchController.dispose();
     _pageController.dispose();
     _animController.dispose();
@@ -354,31 +377,86 @@ class _NewTaskbarState extends State<NewTaskbar> with SingleTickerProviderStateM
   }
 
   Widget _buildHorizontalTray(OsState os) {
+    final battColor = os.batteryCharging
+        ? const Color(0xFF00FF88)
+        : os.batteryLevel <= 15
+            ? const Color(0xFFFF4444)
+            : AppTheme.textSecondary;
+    final battIcon = os.batteryCharging
+        ? Icons.battery_charging_full_rounded
+        : os.batteryLevel >= 90
+            ? Icons.battery_full_rounded
+            : os.batteryLevel >= 60
+                ? Icons.battery_4_bar_rounded
+                : os.batteryLevel >= 30
+                    ? Icons.battery_2_bar_rounded
+                    : Icons.battery_alert_rounded;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(Icons.wifi, size: 16, color: os.wifiEnabled ? AppTheme.accent : AppTheme.textSecondary),
-        const SizedBox(width: 8),
-        Icon(Icons.shield, size: 16, color: os.firewallEnabled ? AppTheme.accent : AppTheme.danger),
-        const SizedBox(width: 8),
-        Icon(Icons.vpn_lock, size: 16, color: os.vpnEnabled ? AppTheme.accent : AppTheme.textSecondary),
-        const SizedBox(width: 12),
-        const Icon(Icons.expand_less, size: 18, color: AppTheme.textSecondary),
+        if (os.hasBattery) ...[
+          Icon(battIcon, size: 13, color: battColor),
+          const SizedBox(width: 3),
+          Text('${os.batteryLevel}%',
+              style: TextStyle(color: battColor, fontSize: 10, fontWeight: FontWeight.w500)),
+          const SizedBox(width: 8),
+        ],
+        Icon(Icons.wifi, size: 14, color: os.wifiEnabled ? AppTheme.accent : AppTheme.textSecondary),
+        const SizedBox(width: 6),
+        Icon(Icons.shield, size: 14, color: os.firewallEnabled ? AppTheme.accent : AppTheme.danger),
+        const SizedBox(width: 6),
+        Icon(Icons.vpn_lock, size: 14, color: os.vpnEnabled ? AppTheme.accent : AppTheme.textSecondary),
+        const SizedBox(width: 10),
+        Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Text(_clockTime,
+                style: const TextStyle(
+                    color: Color(0xFFE0E0F0), fontSize: 11, fontWeight: FontWeight.w600)),
+            Text(_clockDate,
+                style: TextStyle(color: AppTheme.textSecondary, fontSize: 9)),
+          ],
+        ),
+        const SizedBox(width: 6),
+        const Icon(Icons.expand_less, size: 16, color: AppTheme.textSecondary),
       ],
     );
   }
 
   Widget _buildVerticalTray(OsState os) {
+    final battColor = os.batteryCharging
+        ? const Color(0xFF00FF88)
+        : os.batteryLevel <= 15
+            ? const Color(0xFFFF4444)
+            : AppTheme.textSecondary;
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(Icons.wifi, size: 16, color: os.wifiEnabled ? AppTheme.accent : AppTheme.textSecondary),
-        const SizedBox(height: 8),
-        Icon(Icons.shield, size: 16, color: os.firewallEnabled ? AppTheme.accent : AppTheme.danger),
-        const SizedBox(height: 8),
-        Icon(Icons.vpn_lock, size: 16, color: os.vpnEnabled ? AppTheme.accent : AppTheme.textSecondary),
-        const SizedBox(height: 12),
-        const Icon(Icons.expand_less, size: 18, color: AppTheme.textSecondary),
+        // Clock time (compact)
+        Text(_clockTime,
+            style: const TextStyle(
+                color: Color(0xFFE0E0F0), fontSize: 11, fontWeight: FontWeight.w600)),
+        const SizedBox(height: 4),
+        if (os.hasBattery) ...[
+          Icon(
+            os.batteryCharging
+                ? Icons.battery_charging_full_rounded
+                : os.batteryLevel >= 50
+                    ? Icons.battery_full_rounded
+                    : Icons.battery_2_bar_rounded,
+            size: 13,
+            color: battColor,
+          ),
+          const SizedBox(height: 6),
+        ],
+        Icon(Icons.wifi, size: 14, color: os.wifiEnabled ? AppTheme.accent : AppTheme.textSecondary),
+        const SizedBox(height: 6),
+        Icon(Icons.shield, size: 14, color: os.firewallEnabled ? AppTheme.accent : AppTheme.danger),
+        const SizedBox(height: 6),
+        Icon(Icons.vpn_lock, size: 14, color: os.vpnEnabled ? AppTheme.accent : AppTheme.textSecondary),
+        const SizedBox(height: 10),
+        const Icon(Icons.expand_less, size: 16, color: AppTheme.textSecondary),
       ],
     );
   }
@@ -1135,38 +1213,58 @@ class _NewTaskbarState extends State<NewTaskbar> with SingleTickerProviderStateM
   }
 
   Widget _buildQuickSettingsPage2(OsState os) {
-    return Padding(
-      padding: const EdgeInsets.all(10),
-      child: Column(
-        children: [
-          Expanded(
-            child: Row(children: [
-              Expanded(child: _MiniTile(icon: Icons.airplanemode_active, label: 'Airplane', active: false, onTap: () {})),
-              const SizedBox(width: 8),
-              Expanded(child: _MiniTile(icon: Icons.do_not_disturb_rounded, label: 'DND', active: os.doNotDisturb, onTap: os.toggleDoNotDisturb)),
-            ]),
-          ),
-          const SizedBox(height: 8),
-          Expanded(
-            child: Row(children: [
-              Expanded(child: _MiniTile(
-                icon: os.hasBattery
-                    ? (os.batteryCharging
-                        ? Icons.battery_charging_full
-                        : os.batteryLevel >= 75 ? Icons.battery_full
-                          : os.batteryLevel >= 40 ? Icons.battery_3_bar
-                          : os.batteryLevel >= 15 ? Icons.battery_1_bar
-                          : Icons.battery_alert)
-                    : Icons.battery_saver,
-                label: os.hasBattery ? '${os.batteryLevel}%' : 'Battery',
-                active: false,
-                onTap: () {},
-              )),
-              const SizedBox(width: 8),
-              Expanded(child: _MiniTile(icon: Icons.screenshot_rounded, label: 'Screen', active: false, onTap: () {})),
-            ]),
-          ),
-        ],
+    return Consumer<SettingsState>(
+      builder: (context, settings, _) => Padding(
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          children: [
+            Expanded(
+              child: Row(children: [
+                Expanded(child: _MiniTile(
+                  icon: Icons.nightlight_rounded,
+                  label: 'Night',
+                  active: settings.nightLightEnabled,
+                  onTap: settings.toggleNightLight,
+                )),
+                const SizedBox(width: 8),
+                Expanded(child: _MiniTile(
+                  icon: Icons.do_not_disturb_rounded,
+                  label: 'DND',
+                  active: os.doNotDisturb,
+                  onTap: os.toggleDoNotDisturb,
+                )),
+              ]),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: Row(children: [
+                Expanded(child: _MiniTile(
+                  icon: os.hasBattery
+                      ? (os.batteryCharging
+                          ? Icons.battery_charging_full
+                          : os.batteryLevel >= 75
+                              ? Icons.battery_full
+                              : os.batteryLevel >= 40
+                                  ? Icons.battery_3_bar
+                                  : os.batteryLevel >= 15
+                                      ? Icons.battery_1_bar
+                                      : Icons.battery_alert)
+                      : Icons.battery_saver,
+                  label: os.hasBattery ? '${os.batteryLevel}%' : 'Battery',
+                  active: false,
+                  onTap: () {},
+                )),
+                const SizedBox(width: 8),
+                Expanded(child: _MiniTile(
+                  icon: Icons.airplanemode_active,
+                  label: 'Airplane',
+                  active: false,
+                  onTap: () {},
+                )),
+              ]),
+            ),
+          ],
+        ),
       ),
     );
   }

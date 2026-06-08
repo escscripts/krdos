@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../core/settings_state.dart';
 import '../../core/os_state.dart';
 import '../../theme/app_theme.dart';
+import 'monitors_settings.dart';
 
 class DisplaySettingsScreen extends StatefulWidget {
   final int initialTab;
@@ -60,7 +61,7 @@ TextStyle _fontPreview(SettingsState settings) {
 }
 
 class _DisplaySettingsScreenState extends State<DisplaySettingsScreen> {
-  late int _selectedTab = widget.initialTab.clamp(0, 2);
+  late int _selectedTab = widget.initialTab.clamp(0, 3);
 
   final List<String> _resolutions = [
     '1920x1080',
@@ -98,6 +99,7 @@ class _DisplaySettingsScreenState extends State<DisplaySettingsScreen> {
                     _buildSidebarChip(0, Icons.monitor_rounded, 'Display'),
                     _buildSidebarChip(1, Icons.nightlight_rounded, 'Night'),
                     _buildSidebarChip(2, Icons.text_fields_rounded, 'Fonts'),
+                    _buildSidebarChip(3, Icons.desktop_windows_rounded, 'Screens'),
                   ],
                 ),
               ),
@@ -160,6 +162,7 @@ class _DisplaySettingsScreenState extends State<DisplaySettingsScreen> {
           _buildSidebarItem(0, Icons.monitor_rounded, 'Display'),
           _buildSidebarItem(1, Icons.nightlight_rounded, 'Night Light'),
           _buildSidebarItem(2, Icons.text_fields_rounded, 'Fonts'),
+          _buildSidebarItem(3, Icons.desktop_windows_rounded, 'Screens'),
         ],
       ),
     );
@@ -206,6 +209,8 @@ class _DisplaySettingsScreenState extends State<DisplaySettingsScreen> {
         return _buildNightLightTab();
       case 2:
         return _buildFontsTab();
+      case 3:
+        return const MonitorsSettingsScreen();
       default:
         return const SizedBox();
     }

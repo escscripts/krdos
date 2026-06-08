@@ -2094,30 +2094,49 @@ static void on_method_call(FlMethodChannel* /*channel*/,
     if (raw) free(raw);
     resp = FL_METHOD_RESPONSE(fl_method_success_response_new(list));
 
-  // ── Apps: list manually-installed deb packages ────────────────────────────
-  // Uses apt-mark showmanual to limit to user-requested packages only (not deps).
-  // Returns list of: {id, name, version, size_kb, desc, source:"deb"}
+  // ── Apps: list installed GUI apps via .desktop files ──────────────────────
+  // Scans /usr/share/applications/*.desktop — only actual GUI apps (not 500+
+  // Kali meta-packages from apt-mark showmanual).
+  // Returns: {id, name, version, size_kb, desc, categories, icon, source:"deb"}
   } else if (strcmp(method, "apps.list_dpkg") == 0) {
     char* raw = shell_capture(
-      "apt-mark showmanual 2>/dev/null | sort | head -300 | "
-      "xargs dpkg-query -W "
-      "--showformat='${Package}\\t${Version}\\t${Installed-Size}\\t${binary:Summary}\\n'"
-      " 2>/dev/null");
+      "for f in /usr/share/applications/*.desktop"
+      " /usr/local/share/applications/*.desktop; do"
+      "  [ -f \"$f\" ] || continue;"
+      "  nd=$(grep -m1 '^NoDisplay=' \"$f\" 2>/dev/null | cut -d= -f2-);"
+      "  [ \"$nd\" = 'true' ] || [ \"$nd\" = 'True' ] && continue;"
+      "  nm=$(grep -m1 '^Name=' \"$f\" 2>/dev/null | cut -d= -f2-);"
+      "  [ -z \"$nm\" ] && continue;"
+      "  dc=$(grep -m1 '^Comment=' \"$f\" 2>/dev/null | cut -d= -f2-);"
+      "  ct=$(grep -m1 '^Categories=' \"$f\" 2>/dev/null | cut -d= -f2-);"
+      "  ic=$(grep -m1 '^Icon=' \"$f\" 2>/dev/null | cut -d= -f2-);"
+      "  printf '%s\\t%s\\t%s\\t%s\\n' \"$nm\" \"$dc\" \"$ct\" \"$ic\";"
+      " done 2>/dev/null | sort -u");
     FlValue* list = fl_value_new_list();
     if (raw && strlen(raw) > 0) {
       char* line = strtok(raw, "\n");
       while (line) {
-        char pkg[256]="", ver[128]="", sz[32]="", desc[512]="";
-        int n = sscanf(line, "%255[^\t]\t%127[^\t]\t%31[^\t]\t%511[^\n]",
-                       pkg, ver, sz, desc);
-        if (n >= 1 && strlen(pkg) > 0) {
+        char name[256]="", desc[512]="", cats[256]="", icon[128]="";
+        sscanf(line, "%255[^\t]\t%511[^\t]\t%255[^\t]\t%127[^\n]",
+               name, desc, cats, icon);
+        if (strlen(name) > 0) {
+          // Build slug id: lowercase, spaces/slashes → dashes
+          char id[256] = "";
+          strncpy(id, name, sizeof(id) - 1);
+          for (int ci = 0; id[ci]; ci++) {
+            id[ci] = (id[ci] == ' ' || id[ci] == '/') ? '-'
+                   : (id[ci] >= 'A' && id[ci] <= 'Z') ? (char)(id[ci] + 32)
+                   : id[ci];
+          }
           g_autoptr(FlValue) entry = fl_value_new_map();
-          fl_value_set_string_take(entry, "id",      fl_value_new_string(pkg));
-          fl_value_set_string_take(entry, "name",    fl_value_new_string(pkg));
-          fl_value_set_string_take(entry, "version", fl_value_new_string(n >= 2 ? ver : ""));
-          fl_value_set_string_take(entry, "size_kb", fl_value_new_int(atol(sz)));
-          fl_value_set_string_take(entry, "desc",    fl_value_new_string(n >= 4 ? desc : ""));
-          fl_value_set_string_take(entry, "source",  fl_value_new_string("deb"));
+          fl_value_set_string_take(entry, "id",         fl_value_new_string(id));
+          fl_value_set_string_take(entry, "name",       fl_value_new_string(name));
+          fl_value_set_string_take(entry, "version",    fl_value_new_string(""));
+          fl_value_set_string_take(entry, "size_kb",    fl_value_new_int(0));
+          fl_value_set_string_take(entry, "desc",       fl_value_new_string(desc));
+          fl_value_set_string_take(entry, "categories", fl_value_new_string(cats));
+          fl_value_set_string_take(entry, "icon",       fl_value_new_string(icon));
+          fl_value_set_string_take(entry, "source",     fl_value_new_string("deb"));
           fl_value_append_take(list, g_steal_pointer(&entry));
         }
         line = strtok(nullptr, "\n");
