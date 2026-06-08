@@ -697,6 +697,100 @@ class SystemBridge {
       _bool('apps.set_network_flatpak',
           args: {'app_id': appId, 'allowed': allowed});
 
+  // - Firewall (UFW) -
+
+  static Future<Map<String, dynamic>> firewallStatus() async {
+    if (!_live) return {'enabled': false, 'raw': ''};
+    try {
+      final r = await _ch.invokeMapMethod<String, dynamic>('firewall.status');
+      return r ?? {'enabled': false, 'raw': ''};
+    } catch (_) { return {'enabled': false, 'raw': ''}; }
+  }
+
+  static Future<bool> firewallEnable()  => _bool('firewall.enable');
+  static Future<bool> firewallDisable() => _bool('firewall.disable');
+
+  static Future<List<Map<String, dynamic>>> firewallListRules() async {
+    if (!_live) return [];
+    try {
+      final r = await _ch.invokeListMethod<Map>('firewall.list_rules');
+      return r?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [];
+    } catch (_) { return []; }
+  }
+
+  static Future<bool> firewallAddRule({
+    required String port, String proto = 'tcp',
+    String action = 'allow', String direction = 'in',
+  }) => _bool('firewall.add_rule',
+      args: {'port': port, 'proto': proto, 'action': action, 'direction': direction});
+
+  static Future<bool> firewallDeleteRule(int num) =>
+      _bool('firewall.delete_rule', args: {'num': num});
+
+  // - SSH Key Manager -
+
+  static Future<List<Map<String, dynamic>>> keysList() async {
+    if (!_live) return [];
+    try {
+      final r = await _ch.invokeListMethod<Map>('keys.list');
+      return r?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [];
+    } catch (_) { return []; }
+  }
+
+  static Future<Map<String, dynamic>> keysGenerate({
+    String type = 'ed25519', String comment = 'krdos', String passphrase = '',
+  }) async {
+    if (!_live) return {'ok': false, 'output': 'not on Linux', 'pub_path': ''};
+    try {
+      final r = await _ch.invokeMapMethod<String, dynamic>('keys.generate',
+          {'type': type, 'comment': comment, 'passphrase': passphrase});
+      return r ?? {'ok': false, 'output': 'error', 'pub_path': ''};
+    } catch (_) { return {'ok': false, 'output': 'error', 'pub_path': ''}; }
+  }
+
+  static Future<String> keysGetPublic(String pubPath) async {
+    if (!_live) return '';
+    try {
+      return await _ch.invokeMethod<String>('keys.get_public',
+          {'pub_path': pubPath}) ?? '';
+    } on PlatformException { return ''; }
+  }
+
+  static Future<bool> keysDelete(String pubPath) =>
+      _bool('keys.delete', args: {'pub_path': pubPath});
+
+  // - Vault (AES-256-CBC via openssl enc) -
+
+  static Future<Map<String, dynamic>> vaultStatus() async {
+    if (!_live) return {'exists': false, 'file_count': 0};
+    try {
+      final r = await _ch.invokeMapMethod<String, dynamic>('vault.status');
+      return r ?? {'exists': false, 'file_count': 0};
+    } catch (_) { return {'exists': false, 'file_count': 0}; }
+  }
+
+  static Future<bool> vaultCreate(String passphrase) =>
+      _bool('vault.create', args: {'passphrase': passphrase});
+
+  static Future<bool> vaultVerify(String passphrase) =>
+      _bool('vault.verify', args: {'passphrase': passphrase});
+
+  static Future<List<Map<String, dynamic>>> vaultListFiles() async {
+    if (!_live) return [];
+    try {
+      final r = await _ch.invokeListMethod<Map>('vault.list_files');
+      return r?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [];
+    } catch (_) { return []; }
+  }
+
+  static Future<bool> vaultAddFile({
+    required String srcPath, required String passphrase, required String name,
+  }) => _bool('vault.add_file',
+      args: {'src_path': srcPath, 'passphrase': passphrase, 'name': name});
+
+  static Future<bool> vaultRemoveFile(String name) =>
+      _bool('vault.remove_file', args: {'name': name});
+
   // - Internal helpers -
 
   static Future<bool> _bool(String method, {Map<String, dynamic>? args}) async {

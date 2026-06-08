@@ -2207,6 +2207,268 @@ static void on_method_call(FlMethodChannel* /*channel*/,
     bool ok = shell_ok(cmd);
     resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(ok)));
 
+  // ── Firewall: UFW status ──────────────────────────────────────────────────
+  } else if (strcmp(method, "firewall.status") == 0) {
+    char* out = shell_capture("ufw status verbose 2>/dev/null");
+    bool enabled = out && strstr(out, "Status: active") != nullptr;
+    FlValue* m = fl_value_new_map();
+    fl_value_set_string_take(m, "enabled", fl_value_new_bool(enabled));
+    fl_value_set_string_take(m, "raw",     fl_value_new_string(out ? out : ""));
+    if (out) free(out);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(m));
+
+  // ── Firewall: enable ─────────────────────────────────────────────────────
+  } else if (strcmp(method, "firewall.enable") == 0) {
+    bool ok = shell_ok("ufw --force enable 2>/dev/null");
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(ok)));
+
+  // ── Firewall: disable ────────────────────────────────────────────────────
+  } else if (strcmp(method, "firewall.disable") == 0) {
+    bool ok = shell_ok("ufw disable 2>/dev/null");
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(ok)));
+
+  // ── Firewall: list rules (numbered) ──────────────────────────────────────
+  } else if (strcmp(method, "firewall.list_rules") == 0) {
+    char* out = shell_capture("ufw status numbered 2>/dev/null");
+    FlValue* list = fl_value_new_list();
+    if (out) {
+      char* line = strtok(out, "\n");
+      while (line) {
+        int num = 0; char rest[256] = {};
+        if (sscanf(line, " [ %d]%255[^\n]", &num, rest) == 2) {
+          int i = 0; while (rest[i] == ' ') i++;
+          FlValue* entry = fl_value_new_map();
+          fl_value_set_string_take(entry, "num",  fl_value_new_int(num));
+          fl_value_set_string_take(entry, "rule", fl_value_new_string(rest + i));
+          fl_value_append_take(list, entry);
+        }
+        line = strtok(nullptr, "\n");
+      }
+      free(out);
+    }
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(list));
+
+  // ── Firewall: add rule ────────────────────────────────────────────────────
+  } else if (strcmp(method, "firewall.add_rule") == 0) {
+    const char* port = ""; const char* proto = "tcp";
+    const char* action = "allow"; const char* direction = "in";
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* v;
+      v = fl_value_lookup_string(args, "port");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING) port = fl_value_get_string(v);
+      v = fl_value_lookup_string(args, "proto");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING) proto = fl_value_get_string(v);
+      v = fl_value_lookup_string(args, "action");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING) action = fl_value_get_string(v);
+      v = fl_value_lookup_string(args, "direction");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING) direction = fl_value_get_string(v);
+    }
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "ufw %s %s %s/%s 2>/dev/null", action, direction, port, proto);
+    bool ok = shell_ok(cmd);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(ok)));
+
+  // ── Firewall: delete rule by number ──────────────────────────────────────
+  } else if (strcmp(method, "firewall.delete_rule") == 0) {
+    int num = 0;
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* v = fl_value_lookup_string(args, "num");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_INT) num = (int)fl_value_get_int(v);
+    }
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "echo y | ufw delete %d 2>/dev/null", num);
+    bool ok = shell_ok(cmd);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(ok)));
+
+  // ── SSH Keys: list ~/.ssh/*.pub ───────────────────────────────────────────
+  } else if (strcmp(method, "keys.list") == 0) {
+    char* out = shell_capture("ls -1 ~/.ssh/*.pub 2>/dev/null");
+    FlValue* list = fl_value_new_list();
+    if (out) {
+      char* line = strtok(out, "\n");
+      while (line) {
+        rstrip(line);
+        if (strlen(line) == 0) { line = strtok(nullptr, "\n"); continue; }
+        char fp_cmd[512];
+        snprintf(fp_cmd, sizeof(fp_cmd), "ssh-keygen -l -f '%s' 2>/dev/null", line);
+        char* fp = shell_capture(fp_cmd);
+        const char* base = strrchr(line, '/');
+        char name[128] = {};
+        if (base) {
+          strncpy(name, base + 1, 127);
+          char* dot = strstr(name, ".pub");
+          if (dot) *dot = '\0';
+        }
+        FlValue* m = fl_value_new_map();
+        fl_value_set_string_take(m, "pub_path",    fl_value_new_string(line));
+        fl_value_set_string_take(m, "name",         fl_value_new_string(name));
+        fl_value_set_string_take(m, "fingerprint",  fl_value_new_string(fp ? fp : ""));
+        if (fp) free(fp);
+        fl_value_append_take(list, m);
+        line = strtok(nullptr, "\n");
+      }
+      free(out);
+    }
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(list));
+
+  // ── SSH Keys: generate new key pair ─────────────────────────────────────
+  } else if (strcmp(method, "keys.generate") == 0) {
+    const char* type = "ed25519"; const char* comment = "krdos"; const char* passphrase = "";
+    char filename[256]; snprintf(filename, sizeof(filename), "/root/.ssh/id_ed25519_krdos");
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* v;
+      v = fl_value_lookup_string(args, "type");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING) type = fl_value_get_string(v);
+      v = fl_value_lookup_string(args, "comment");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING) comment = fl_value_get_string(v);
+      v = fl_value_lookup_string(args, "passphrase");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING) passphrase = fl_value_get_string(v);
+      v = fl_value_lookup_string(args, "filename");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING)
+        snprintf(filename, sizeof(filename), "%s", fl_value_get_string(v));
+      else
+        snprintf(filename, sizeof(filename), "/root/.ssh/id_%s_krdos", type);
+    }
+    shell_ok("mkdir -p /root/.ssh && chmod 700 /root/.ssh");
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd),
+      "ssh-keygen -t '%s' -C '%s' -f '%s' -N '%s' 2>&1", type, comment, filename, passphrase);
+    char* gen_out = shell_capture(cmd);
+    bool ok = gen_out && strstr(gen_out, "Your identification has been saved") != nullptr;
+    FlValue* m = fl_value_new_map();
+    fl_value_set_string_take(m, "ok",       fl_value_new_bool(ok));
+    fl_value_set_string_take(m, "output",   fl_value_new_string(gen_out ? gen_out : ""));
+    fl_value_set_string_take(m, "pub_path", fl_value_new_string(filename));
+    if (gen_out) free(gen_out);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(m));
+
+  // ── SSH Keys: read public key content ────────────────────────────────────
+  } else if (strcmp(method, "keys.get_public") == 0) {
+    const char* pub_path = "";
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* v = fl_value_lookup_string(args, "pub_path");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING) pub_path = fl_value_get_string(v);
+    }
+    char cmd[512]; snprintf(cmd, sizeof(cmd), "cat '%s' 2>/dev/null", pub_path);
+    char* pub_out = shell_capture(cmd);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(
+      fl_value_new_string(pub_out ? pub_out : "")));
+    if (pub_out) free(pub_out);
+
+  // ── SSH Keys: delete key pair (private + public) ──────────────────────────
+  } else if (strcmp(method, "keys.delete") == 0) {
+    const char* pub_path = "";
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* v = fl_value_lookup_string(args, "pub_path");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING) pub_path = fl_value_get_string(v);
+    }
+    char priv[512]; strncpy(priv, pub_path, 511); priv[511] = '\0';
+    char* dot = strrchr(priv, '.'); if (dot && strcmp(dot, ".pub") == 0) *dot = '\0';
+    char cmd[1024]; snprintf(cmd, sizeof(cmd), "rm -f '%s' '%s.pub' 2>/dev/null", priv, priv);
+    bool ok = shell_ok(cmd);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(ok)));
+
+  // ── Vault: check status (exists + file count) ─────────────────────────────
+  } else if (strcmp(method, "vault.status") == 0) {
+    bool has_marker = shell_ok("test -f /root/.krdos_vault/.vault_id");
+    char* cnt = shell_capture("ls -1 /root/.krdos_vault/*.vlt 2>/dev/null | wc -l");
+    FlValue* m = fl_value_new_map();
+    fl_value_set_string_take(m, "exists",     fl_value_new_bool(has_marker));
+    fl_value_set_string_take(m, "file_count", fl_value_new_int(cnt ? atoi(cnt) : 0));
+    if (cnt) free(cnt);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(m));
+
+  // ── Vault: create (initialise with passphrase) ───────────────────────────
+  } else if (strcmp(method, "vault.create") == 0) {
+    const char* passphrase = "";
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* v = fl_value_lookup_string(args, "passphrase");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING) passphrase = fl_value_get_string(v);
+    }
+    shell_ok("mkdir -p /root/.krdos_vault && chmod 700 /root/.krdos_vault");
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+      "echo 'KrdOS-Vault-v1' | openssl enc -aes-256-cbc -salt -pbkdf2 "
+      "-out /root/.krdos_vault/.vault_id -pass pass:'%s' 2>/dev/null", passphrase);
+    bool ok = shell_ok(cmd);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(ok)));
+
+  // ── Vault: verify passphrase ─────────────────────────────────────────────
+  } else if (strcmp(method, "vault.verify") == 0) {
+    const char* passphrase = "";
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* v = fl_value_lookup_string(args, "passphrase");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING) passphrase = fl_value_get_string(v);
+    }
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+      "openssl enc -d -aes-256-cbc -salt -pbkdf2 "
+      "-in /root/.krdos_vault/.vault_id -pass pass:'%s' 2>/dev/null | grep -q 'KrdOS-Vault-v1'",
+      passphrase);
+    bool ok = shell_ok(cmd);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(ok)));
+
+  // ── Vault: list encrypted files ──────────────────────────────────────────
+  } else if (strcmp(method, "vault.list_files") == 0) {
+    char* out = shell_capture("ls -1 /root/.krdos_vault/*.vlt 2>/dev/null");
+    FlValue* list = fl_value_new_list();
+    if (out) {
+      char* line = strtok(out, "\n");
+      while (line) {
+        rstrip(line);
+        if (strlen(line) < 2) { line = strtok(nullptr, "\n"); continue; }
+        const char* base = strrchr(line, '/');
+        char name[256] = {};
+        if (base) {
+          strncpy(name, base + 1, 255);
+          char* dot = strstr(name, ".vlt"); if (dot) *dot = '\0';
+        }
+        char szc[512]; snprintf(szc, sizeof(szc), "stat -c %%s '%s' 2>/dev/null", line);
+        char* sz = shell_capture(szc);
+        FlValue* m = fl_value_new_map();
+        fl_value_set_string_take(m, "name", fl_value_new_string(name));
+        fl_value_set_string_take(m, "path", fl_value_new_string(line));
+        fl_value_set_string_take(m, "size", fl_value_new_string(sz ? sz : "0"));
+        if (sz) free(sz);
+        fl_value_append_take(list, m);
+        line = strtok(nullptr, "\n");
+      }
+      free(out);
+    }
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(list));
+
+  // ── Vault: encrypt and store a file ──────────────────────────────────────
+  } else if (strcmp(method, "vault.add_file") == 0) {
+    const char* src_path = ""; const char* passphrase = ""; const char* name = "";
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* v;
+      v = fl_value_lookup_string(args, "src_path");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING) src_path = fl_value_get_string(v);
+      v = fl_value_lookup_string(args, "passphrase");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING) passphrase = fl_value_get_string(v);
+      v = fl_value_lookup_string(args, "name");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING) name = fl_value_get_string(v);
+    }
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd),
+      "openssl enc -aes-256-cbc -salt -pbkdf2 -in '%s' "
+      "-out '/root/.krdos_vault/%s.vlt' -pass pass:'%s' 2>/dev/null",
+      src_path, name, passphrase);
+    bool ok = shell_ok(cmd);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(ok)));
+
+  // ── Vault: remove encrypted file ─────────────────────────────────────────
+  } else if (strcmp(method, "vault.remove_file") == 0) {
+    const char* name = "";
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* v = fl_value_lookup_string(args, "name");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING) name = fl_value_get_string(v);
+    }
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "rm -f '/root/.krdos_vault/%s.vlt' 2>/dev/null", name);
+    bool ok = shell_ok(cmd);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(ok)));
+
   } else {
     resp = FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
   }

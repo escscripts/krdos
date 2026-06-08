@@ -23,8 +23,12 @@ import '../../screens/settings/about_screen.dart';
 import '../../screens/settings/maintenance_screen.dart';
 import '../../screens/settings/monitors_settings.dart';
 import '../../screens/settings/network_settings.dart';
+import '../../screens/security/firewall_screen.dart';
+import '../../screens/security/ssh_keys_screen.dart';
+import '../../screens/security/vault_screen.dart';
 import '../../screens/settings/security_settings.dart';
 import '../../screens/settings_screen.dart';
+import '../../screens/system/system_dashboard_screen.dart';
 import '../../screens/user_management_screen.dart';
 import '../../theme/app_theme.dart';
 import '../../theme/shell_accent.dart';
@@ -482,17 +486,21 @@ class ShellAppRegistry {
       case 'users':
         return const UserManagementScreen();
       case 'security':
-      case 'vault':
-      case 'keys':
-      case 'firewall':
         return const SecuritySettingsScreen();
+      case 'vault':
+        return const VaultScreen();
+      case 'keys':
+        return const SshKeysScreen();
+      case 'firewall':
+        return const FirewallScreen();
       case 'network':
       case 'dns':
         return NetworkSettingsScreen();
       case 'monitor':
-      case 'system':
       case 'analytics':
         return const AboutScreen();
+      case 'system':
+        return const SystemDashboardScreen();
       case 'allapps':
         return const AppDrawer();
       case 'meshcommand':

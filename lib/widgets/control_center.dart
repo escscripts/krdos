@@ -286,7 +286,14 @@ class _ControlCenterState extends State<ControlCenter> {
         ]),
         const SizedBox(height: 8),
         Row(children: [
-          Expanded(child: _SmallTile(icon: Icons.nightlight_rounded, label: 'Night', active: false, onTap: () {})),
+          Consumer<SettingsState>(
+            builder: (context, settings, _) => Expanded(child: _SmallTile(
+              icon: Icons.nightlight_rounded,
+              label: 'Night',
+              active: settings.nightLightEnabled,
+              onTap: settings.toggleNightLight,
+            )),
+          ),
           const SizedBox(width: 8),
           Expanded(child: _SmallTile(icon: Icons.nfc_rounded, label: 'NFC', active: false, onTap: () {})),
           const SizedBox(width: 8),
