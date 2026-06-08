@@ -12,7 +12,73 @@
 #include <gdk/gdkx.h>
 #include <X11/Xlib.h>
 
-static const char* kChannelName = "krdos/system";
+static const char* kChannelName        = "krdos/system";
+static const char* kHotplugChannelName = "krdos/monitor_hotplug";
+
+// ── Monitor hotplug — udev event thread ────────────────────────────────────
+// Uses `udevadm monitor --subsystem-match=drm` which is a thin wrapper around
+// the kernel's netlink socket.  Zero polling — the kernel fires the event the
+// instant a connector changes state, udevadm prints a line, fgets() unblocks,
+// we dispatch to the Flutter main loop via g_idle_add, and Flutter rebuilds.
+static FlEventChannel* g_hotplug_channel = nullptr;
+static GThread*        g_hotplug_thread  = nullptr;
+static volatile gint   g_hotplug_active  = 0;   // 1 when Dart stream is listened
+
+static gboolean hotplug_send_idle(gpointer) {
+  if (g_hotplug_channel && g_atomic_int_get(&g_hotplug_active)) {
+    GError* err = nullptr;
+    fl_event_channel_send(g_hotplug_channel, fl_value_new_null(), nullptr, &err);
+    if (err) g_error_free(err);
+  }
+  return G_SOURCE_REMOVE;
+}
+
+static gpointer hotplug_watch_thread(gpointer) {
+  // udevadm monitor streams one line per udev event to stdout — no polling.
+  // We filter for UDEV-processed DRM events (not raw KERNEL events) so we
+  // only get one notification per physical plug/unplug action.
+  FILE* f = popen("udevadm monitor --subsystem-match=drm 2>/dev/null", "r");
+  if (!f) return nullptr;
+
+  char line[512];
+  gint64 last_event_ms = 0;
+
+  while (fgets(line, sizeof(line), f)) {
+    // Only UDEV-processed events (after udev rules ran), not raw KERNEL events.
+    // Line format: "UDEV  [1234.567] add    /devices/.../card0-HDMI-A-1 (drm)"
+    if (strncmp(line, "UDEV  ", 5) != 0) continue;
+
+    // Debounce — a single plug event can fire 2-4 consecutive UDEV lines
+    // for the same connector.  Ignore anything within 1 s of the last send.
+    gint64 now_ms = g_get_monotonic_time() / 1000;
+    if (now_ms - last_event_ms < 1000) continue;
+    last_event_ms = now_ms;
+
+    // Forward to Flutter on the main GLib thread
+    g_idle_add(hotplug_send_idle, nullptr);
+  }
+
+  pclose(f);
+  return nullptr;
+}
+
+static FlMethodErrorResponse* hotplug_on_listen(FlEventChannel*, FlValue*,
+                                                  gpointer) {
+  g_atomic_int_set(&g_hotplug_active, 1);
+  if (!g_hotplug_thread) {
+    // Start the udevadm watcher thread once, lazily.
+    g_hotplug_thread = g_thread_new("krdos-hotplug", hotplug_watch_thread, nullptr);
+  }
+  return nullptr;  // no error
+}
+
+static FlMethodErrorResponse* hotplug_on_cancel(FlEventChannel*, FlValue*,
+                                                  gpointer) {
+  // Stop forwarding events but keep the thread alive (cheap, blocks on fgets).
+  g_atomic_int_set(&g_hotplug_active, 0);
+  return nullptr;
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ---------------------------------------------------------------------------
 // Embedded WebKit2GTK browser — XReparentWindow approach
@@ -2639,4 +2705,14 @@ void system_channel_init(FlPluginRegistry* registry) {
                                             nullptr, nullptr);
   // g_object_ref keeps it from being freed immediately
   g_object_ref(channel);
+
+  // ── Monitor hotplug EventChannel ────────────────────────────────────────
+  // Dart side: SystemBridge.monitorHotplugEvents (Stream<void>)
+  // C++ side: fires whenever udevadm reports a DRM subsystem change — i.e.
+  //           the instant the kernel detects a connector plug/unplug.
+  FlEventChannel* hp_channel = fl_event_channel_new(
+      messenger, kHotplugChannelName, FL_METHOD_CODEC(codec));
+  fl_event_channel_set_stream_handler(
+      hp_channel, hotplug_on_listen, hotplug_on_cancel, nullptr, nullptr);
+  g_hotplug_channel = FL_EVENT_CHANNEL(g_object_ref(hp_channel));
 }

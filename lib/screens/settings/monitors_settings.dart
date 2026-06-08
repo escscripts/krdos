@@ -60,54 +60,37 @@ class _MonitorsSettingsScreenState extends State<MonitorsSettingsScreen> {
   int? _dragging;
   bool _applying = false;
   String? _statusMsg;
-  Timer? _hotplugTimer;
-  Set<String> _knownOutputs = {};
+
+  // udev-based hotplug subscription — kernel fires this, no polling
+  StreamSubscription<void>? _hotplugSub;
 
   @override
   void initState() {
     super.initState();
     _detect();
-    // Poll every 8 seconds for newly connected/disconnected monitors
-    _hotplugTimer = Timer.periodic(const Duration(seconds: 8), (_) => _checkHotplug());
+    // Subscribe to real-time udev DRM events.
+    // C++: udevadm monitor --subsystem-match=drm running in background thread.
+    // Event fires the instant the kernel detects connector state change.
+    _hotplugSub = SystemBridge.monitorHotplugEvents.listen((_) {
+      if (!_loading && !_applying && mounted) {
+        _detect();
+        setState(() => _statusMsg = 'Display connected — settings updated.');
+      }
+    });
   }
 
   @override
   void dispose() {
-    _hotplugTimer?.cancel();
+    _hotplugSub?.cancel();
     super.dispose();
   }
-
-  /// Silent hotplug check — only reloads if connected outputs changed
-  Future<void> _checkHotplug() async {
-    if (_loading || _applying) return;
-    final raw = await SystemBridge.detectMonitors();
-    final newOutputs = raw
-        .where((m) => m['connected'] == true)
-        .map((m) => m['output']?.toString() ?? '')
-        .toSet();
-    if (!mounted) return;
-    if (!_setEquals(newOutputs, _knownOutputs)) {
-      // New monitor plugged in (or one removed) — reload full UI
-      _knownOutputs = newOutputs;
-      setState(() {
-        _monitors = raw.map(_Monitor.fromMap).toList();
-        _statusMsg = 'New display detected — review settings and apply.';
-      });
-    }
-  }
-
-  bool _setEquals(Set<String> a, Set<String> b) =>
-      a.length == b.length && a.every(b.contains);
 
   Future<void> _detect() async {
     setState(() { _loading = true; _statusMsg = null; });
     final raw = await SystemBridge.detectMonitors();
+    if (!mounted) return;
     setState(() {
       _monitors = raw.map(_Monitor.fromMap).toList();
-      _knownOutputs = _monitors
-          .where((m) => m.connected)
-          .map((m) => m.output)
-          .toSet();
       _loading = false;
     });
   }

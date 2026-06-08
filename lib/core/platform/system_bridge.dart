@@ -11,6 +11,21 @@ import 'package:flutter/services.dart';
 class SystemBridge {
   static const _ch = MethodChannel('krdos/system');
 
+  // ── Monitor hotplug EventChannel ─────────────────────────────────────────
+  // Backed by `udevadm monitor --subsystem-match=drm` in C++.
+  // Fires the instant the kernel detects a connector plug/unplug — no polling.
+  static const _hotplugCh = EventChannel('krdos/monitor_hotplug');
+  static Stream<void>? _hotplugStream;
+
+  /// Real-time monitor plug/unplug events.
+  /// Subscribe in MonitorsSettingsScreen; stream is broadcast (multiple listeners OK).
+  static Stream<void> get monitorHotplugEvents {
+    _hotplugStream ??= _hotplugCh
+        .receiveBroadcastStream()
+        .map((_) => null);
+    return _hotplugStream!;
+  }
+
   static bool get _live => !kIsWeb && Platform.isLinux;
 
   // - WiFi -
