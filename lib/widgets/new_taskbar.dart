@@ -38,6 +38,7 @@ class _NewTaskbarState extends State<NewTaskbar> with SingleTickerProviderStateM
   final TextEditingController _searchController = TextEditingController();
   int _quickSettingsPage = 0; // For pagination
   int _ccTab = 0; // 0=main, 1=wifi, 2=bluetooth
+  String _allAppsCategory = 'ALL'; // Category filter for all-apps overlay
   late PageController _pageController;
   
   late AnimationController _animController;
@@ -486,6 +487,18 @@ class _NewTaskbarState extends State<NewTaskbar> with SingleTickerProviderStateM
     }
   }
 
+  String _catLabel(String cat) {
+    switch (cat.toUpperCase()) {
+      case 'SECURITY': return 'Security';
+      case 'SYSTEM':   return 'System';
+      case 'TOOLS':    return 'Tools';
+      case 'NETWORK':  return 'Network';
+      case 'MEDIA':    return 'Media';
+      case 'DEV':      return 'Dev';
+      default:         return cat[0].toUpperCase() + cat.substring(1).toLowerCase();
+    }
+  }
+
   Offset _getShadowOffset(DockPosition position) {
     switch (position) {
       case DockPosition.bottom:
@@ -557,18 +570,24 @@ class _NewTaskbarState extends State<NewTaskbar> with SingleTickerProviderStateM
   Widget _buildAllAppsOverlay(DockSettings settings) {
     final screenSize = MediaQuery.of(context).size;
     final position = settings.position;
+    // ignore: unused_local_variable
     final isVertical = position == DockPosition.left || position == DockPosition.right;
-    
-  // Filter apps based on search
-    final searchQuery = _searchController.text;
-    final pinEligible =
-        ShellAppRegistry.all.where((a) => a.allowTaskbarPin).toList();
-    final filteredDefs = searchQuery.isEmpty
-        ? pinEligible
-        : pinEligible.where((a) => a.matchesQuery(searchQuery)).toList();
-    filteredDefs.sort(
-      (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
-    );
+
+    // All pinnable apps
+    final all = ShellAppRegistry.all.where((a) => a.allowTaskbarPin).toList();
+
+    // Collect categories
+    final categories = <String>['ALL',
+      ...all.map((a) => a.category).toSet().toList()..sort()];
+
+    // Filter apps: category + search
+    final searchQuery = _searchController.text.toLowerCase();
+    final filteredDefs = all.where((a) {
+      final catMatch = _allAppsCategory == 'ALL' || a.category == _allAppsCategory;
+      final searchMatch = searchQuery.isEmpty || a.matchesQuery(searchQuery);
+      return catMatch && searchMatch;
+    }).toList();
+    filteredDefs.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
     final filteredApps = filteredDefs.map((a) => a.toTaskbarMap()).toList();
 
   // Calculate menu dimensions
@@ -598,6 +617,7 @@ class _NewTaskbarState extends State<NewTaskbar> with SingleTickerProviderStateM
       onTap: () => setState(() {
         _showAllApps = false;
         _searchController.clear();
+        _allAppsCategory = 'ALL';
       }),
       child: Container(
         color: Colors.black.withOpacity(0.6),
@@ -676,7 +696,46 @@ class _NewTaskbarState extends State<NewTaskbar> with SingleTickerProviderStateM
                             ],
                           ),
                         ),
-                        
+
+  // Category filter chips
+                        if (searchQuery.isEmpty)
+                          SizedBox(
+                            height: 36,
+                            child: ListView.separated(
+                              scrollDirection: Axis.horizontal,
+                              padding: const EdgeInsets.symmetric(horizontal: 16),
+                              itemCount: categories.length,
+                              separatorBuilder: (_, __) => const SizedBox(width: 6),
+                              itemBuilder: (_, i) {
+                                final cat = categories[i];
+                                final active = _allAppsCategory == cat;
+                                return GestureDetector(
+                                  onTap: () => setState(() => _allAppsCategory = cat),
+                                  child: AnimatedContainer(
+                                    duration: const Duration(milliseconds: 120),
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                    decoration: BoxDecoration(
+                                      color: active ? AppTheme.accentDim : AppTheme.surface,
+                                      borderRadius: BorderRadius.circular(20),
+                                      border: Border.all(
+                                        color: active ? AppTheme.accent : AppTheme.border.withValues(alpha: 0.4),
+                                      ),
+                                    ),
+                                    child: Text(
+                                      cat == 'ALL' ? 'All Apps' : _catLabel(cat),
+                                      style: TextStyle(
+                                        color: active ? AppTheme.accent : AppTheme.textSecondary,
+                                        fontSize: 11,
+                                        fontWeight: active ? FontWeight.w600 : FontWeight.normal,
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                        const SizedBox(height: 8),
+
   // Apps Grid
                         Expanded(
                           child: filteredApps.isEmpty
@@ -684,7 +743,7 @@ class _NewTaskbarState extends State<NewTaskbar> with SingleTickerProviderStateM
                                   child: Column(
                                     mainAxisAlignment: MainAxisAlignment.center,
                                     children: [
-                                      Icon(Icons.search_off, size: 48, color: AppTheme.textSecondary.withOpacity(0.5)),
+                                      Icon(Icons.search_off, size: 48, color: AppTheme.textSecondary.withValues(alpha: 0.5)),
                                       const SizedBox(height: 12),
                                       Text(
                                         'No apps found',
