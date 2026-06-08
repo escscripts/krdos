@@ -316,6 +316,24 @@ static void rstrip(char* s) {
 // ---------------------------------------------------------------------------
 // Method call handler
 // ---------------------------------------------------------------------------
+// Helper: extract value from lsblk --pairs key="value" output.
+// Returns heap-allocated string (caller must free).
+static char* lsblk_kv(const char* line, const char* key) {
+  char search[64];
+  snprintf(search, sizeof(search), "%s=\"", key);
+  const char* s = strstr(line, search);
+  if (!s) return strdup("");
+  s += strlen(search);
+  const char* e = strchr(s, '"');
+  if (!e) return strdup("");
+  int len = (int)(e - s);
+  char* r = (char*)malloc(len + 1);
+  strncpy(r, s, len);
+  r[len] = '\0';
+  return r;
+}
+
+// ---------------------------------------------------------------------------
 
 static void on_method_call(FlMethodChannel* /*channel*/,
                             FlMethodCall*   call,
@@ -2031,6 +2049,163 @@ static void on_method_call(FlMethodChannel* /*channel*/,
       }
     }
     resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(TRUE)));
+
+  // ── Drives: structured list of all block devices ──────────────────────────
+  // Returns list of: {name, device, label, size, type, mountpoint, removable, vendor, model}
+  // type is "disk" or "part". Only includes disk and part (skips loop, rom, etc.)
+  } else if (strcmp(method, "drives.list") == 0) {
+    char* raw = shell_capture(
+      "lsblk -rn -P -o NAME,SIZE,TYPE,MOUNTPOINT,LABEL,RM,VENDOR,MODEL 2>/dev/null");
+    FlValue* list = fl_value_new_list();
+    if (raw && strlen(raw) > 0) {
+      char* line = strtok(raw, "\n");
+      while (line) {
+        char* type = lsblk_kv(line, "TYPE");
+        if (strcmp(type, "disk") == 0 || strcmp(type, "part") == 0) {
+          char* name   = lsblk_kv(line, "NAME");
+          char* size   = lsblk_kv(line, "SIZE");
+          char* mp     = lsblk_kv(line, "MOUNTPOINT");
+          char* label  = lsblk_kv(line, "LABEL");
+          char* rm     = lsblk_kv(line, "RM");
+          char* vendor = lsblk_kv(line, "VENDOR");
+          char* model  = lsblk_kv(line, "MODEL");
+          g_autoptr(FlValue) entry = fl_value_new_map();
+          char dev[64];
+          snprintf(dev, sizeof(dev), "/dev/%s", name);
+          // Display label if present, otherwise use name
+          const char* disp = (strlen(label) > 0) ? label : name;
+          fl_value_set_string_take(entry, "name",       fl_value_new_string(name));
+          fl_value_set_string_take(entry, "device",     fl_value_new_string(dev));
+          fl_value_set_string_take(entry, "label",      fl_value_new_string(disp));
+          fl_value_set_string_take(entry, "size",       fl_value_new_string(size));
+          fl_value_set_string_take(entry, "type",       fl_value_new_string(type));
+          fl_value_set_string_take(entry, "mountpoint", fl_value_new_string(mp));
+          fl_value_set_string_take(entry, "removable",  fl_value_new_bool(strcmp(rm, "1") == 0));
+          fl_value_set_string_take(entry, "vendor",     fl_value_new_string(vendor));
+          fl_value_set_string_take(entry, "model",      fl_value_new_string(model));
+          fl_value_append_take(list, g_steal_pointer(&entry));
+          free(name); free(size); free(mp); free(label); free(rm);
+          free(vendor); free(model);
+        }
+        free(type);
+        line = strtok(nullptr, "\n");
+      }
+    }
+    if (raw) free(raw);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(list));
+
+  // ── Apps: list manually-installed deb packages ────────────────────────────
+  // Uses apt-mark showmanual to limit to user-requested packages only (not deps).
+  // Returns list of: {id, name, version, size_kb, desc, source:"deb"}
+  } else if (strcmp(method, "apps.list_dpkg") == 0) {
+    char* raw = shell_capture(
+      "apt-mark showmanual 2>/dev/null | sort | head -300 | "
+      "xargs dpkg-query -W "
+      "--showformat='${Package}\\t${Version}\\t${Installed-Size}\\t${binary:Summary}\\n'"
+      " 2>/dev/null");
+    FlValue* list = fl_value_new_list();
+    if (raw && strlen(raw) > 0) {
+      char* line = strtok(raw, "\n");
+      while (line) {
+        char pkg[256]="", ver[128]="", sz[32]="", desc[512]="";
+        int n = sscanf(line, "%255[^\t]\t%127[^\t]\t%31[^\t]\t%511[^\n]",
+                       pkg, ver, sz, desc);
+        if (n >= 1 && strlen(pkg) > 0) {
+          g_autoptr(FlValue) entry = fl_value_new_map();
+          fl_value_set_string_take(entry, "id",      fl_value_new_string(pkg));
+          fl_value_set_string_take(entry, "name",    fl_value_new_string(pkg));
+          fl_value_set_string_take(entry, "version", fl_value_new_string(n >= 2 ? ver : ""));
+          fl_value_set_string_take(entry, "size_kb", fl_value_new_int(atol(sz)));
+          fl_value_set_string_take(entry, "desc",    fl_value_new_string(n >= 4 ? desc : ""));
+          fl_value_set_string_take(entry, "source",  fl_value_new_string("deb"));
+          fl_value_append_take(list, g_steal_pointer(&entry));
+        }
+        line = strtok(nullptr, "\n");
+      }
+    }
+    if (raw) free(raw);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(list));
+
+  // ── Apps: uninstall a deb package (apt-get remove --purge) ───────────────
+  } else if (strcmp(method, "apps.uninstall_deb") == 0) {
+    const char* pkg = "";
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* v = fl_value_lookup_string(args, "package");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING) pkg = fl_value_get_string(v);
+    }
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+      "DEBIAN_FRONTEND=noninteractive sudo apt-get remove --purge -y '%s' 2>&1 | tail -8", pkg);
+    char* out = shell_capture(cmd);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(
+      fl_value_new_string(out ? out : "error")));
+    if (out) free(out);
+
+  // ── Apps: uninstall a Flatpak app ─────────────────────────────────────────
+  } else if (strcmp(method, "apps.uninstall_flatpak") == 0) {
+    const char* app_id = "";
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* v = fl_value_lookup_string(args, "app_id");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING) app_id = fl_value_get_string(v);
+    }
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+      "flatpak uninstall --user -y '%s' 2>&1 | tail -5", app_id);
+    char* out = shell_capture(cmd);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(
+      fl_value_new_string(out ? out : "error")));
+    if (out) free(out);
+
+  // ── Apps: get detailed dpkg-query -s output for a deb package ────────────
+  } else if (strcmp(method, "apps.get_info_deb") == 0) {
+    const char* pkg = "";
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* v = fl_value_lookup_string(args, "package");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING) pkg = fl_value_get_string(v);
+    }
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "dpkg-query -s '%s' 2>/dev/null", pkg);
+    char* out = shell_capture(cmd);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(
+      fl_value_new_string(out ? out : "")));
+    if (out) free(out);
+
+  // ── Apps: get Flatpak app permissions (flatpak info --show-permissions) ───
+  } else if (strcmp(method, "apps.get_permissions_flatpak") == 0) {
+    const char* app_id = "";
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* v = fl_value_lookup_string(args, "app_id");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING) app_id = fl_value_get_string(v);
+    }
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "flatpak info --show-permissions '%s' 2>/dev/null", app_id);
+    char* out = shell_capture(cmd);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(
+      fl_value_new_string(out ? out : "")));
+    if (out) free(out);
+
+  // ── Apps: toggle Flatpak network permission (flatpak override) ────────────
+  // This is the one Flatpak permission that meaningfully maps to a network kill.
+  // allowed=true  → flatpak override --user --share=network  <app_id>
+  // allowed=false → flatpak override --user --unshare=network <app_id>
+  } else if (strcmp(method, "apps.set_network_flatpak") == 0) {
+    const char* app_id = "";
+    bool allowed = true;
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* ai = fl_value_lookup_string(args, "app_id");
+      FlValue* al = fl_value_lookup_string(args, "allowed");
+      if (ai && fl_value_get_type(ai) == FL_VALUE_TYPE_STRING)
+        app_id = fl_value_get_string(ai);
+      if (al && fl_value_get_type(al) == FL_VALUE_TYPE_BOOL)
+        allowed = fl_value_get_bool(al);
+    }
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+      allowed ? "flatpak override --user --share=network '%s' 2>/dev/null"
+              : "flatpak override --user --unshare=network '%s' 2>/dev/null",
+      app_id);
+    bool ok = shell_ok(cmd);
+    resp = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(ok)));
 
   } else {
     resp = FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());

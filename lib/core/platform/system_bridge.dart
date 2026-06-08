@@ -631,6 +631,72 @@ class SystemBridge {
   static Future<bool> setThermalGovernor(String governor) =>
       _bool('cpu.set_governor', args: {'governor': governor});
 
+  // - Drives (structured lsblk output) -
+
+  /// Returns list of all block devices (disk + part):
+  /// {name, device, label, size, type, mountpoint, removable, vendor, model}
+  static Future<List<Map<String, dynamic>>> drivesList() async {
+    if (!_live) return [];
+    try {
+      final r = await _ch.invokeListMethod<Map>('drives.list');
+      return r?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [];
+    } catch (_) { return []; }
+  }
+
+  // - App management -
+
+  /// List manually-installed deb packages (apt-mark showmanual).
+  /// Each entry: {id, name, version, size_kb, desc, source:"deb"}
+  static Future<List<Map<String, dynamic>>> appsListDpkg() async {
+    if (!_live) return [];
+    try {
+      final r = await _ch.invokeListMethod<Map>('apps.list_dpkg');
+      return r?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [];
+    } catch (_) { return []; }
+  }
+
+  /// Uninstall a deb package (apt-get remove --purge). Returns output text.
+  static Future<String> appsUninstallDeb(String package) async {
+    if (!_live) return 'not on Linux';
+    try {
+      return await _ch.invokeMethod<String>('apps.uninstall_deb',
+          {'package': package}) ?? 'error';
+    } on PlatformException catch (e) { return e.message ?? 'error'; }
+  }
+
+  /// Uninstall a Flatpak app. Returns output text.
+  static Future<String> appsUninstallFlatpak(String appId) async {
+    if (!_live) return 'not on Linux';
+    try {
+      return await _ch.invokeMethod<String>('apps.uninstall_flatpak',
+          {'app_id': appId}) ?? 'error';
+    } on PlatformException catch (e) { return e.message ?? 'error'; }
+  }
+
+  /// Get raw dpkg-query -s output for a package.
+  static Future<String> appsGetInfoDeb(String package) async {
+    if (!_live) return '';
+    try {
+      return await _ch.invokeMethod<String>('apps.get_info_deb',
+          {'package': package}) ?? '';
+    } on PlatformException { return ''; }
+  }
+
+  /// Get flatpak info --show-permissions output for an app.
+  static Future<String> appsGetPermissionsFlatpak(String appId) async {
+    if (!_live) return '';
+    try {
+      return await _ch.invokeMethod<String>('apps.get_permissions_flatpak',
+          {'app_id': appId}) ?? '';
+    } on PlatformException { return ''; }
+  }
+
+  /// Allow or block network access for a Flatpak app via flatpak override.
+  static Future<bool> appsSetNetworkFlatpak(String appId,
+      {required bool allowed}) =>
+      _bool('apps.set_network_flatpak',
+          args: {'app_id': appId, 'allowed': allowed});
+
   // - Internal helpers -
 
   static Future<bool> _bool(String method, {Map<String, dynamic>? args}) async {

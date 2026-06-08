@@ -6,6 +6,7 @@ import '../../apps/meshcommand/meshcommand_launcher.dart';
 import '../../screens/app_drawer.dart';
 import '../../screens/apps/advanced_monitor_screen.dart';
 import '../../screens/apps/app_installer_screen.dart';
+import '../../screens/apps/app_manager_screen.dart';
 import '../../screens/apps/audio_control_screen.dart';
 import '../../screens/apps/browser_screen.dart';
 import '../../screens/apps/calculator_screen.dart';
@@ -356,6 +357,15 @@ class ShellAppRegistry {
       keywords: ['clean', 'optimize', 'health', 'startup', 'maintain'],
     ),
     ShellAppDef(
+      id: 'app_manager',
+      title: 'App Manager',
+      icon: Icons.manage_search_rounded,
+      color: Color(0xFF00BCD4),
+      category: 'SYSTEM',
+      keywords: ['apps', 'packages', 'install', 'uninstall', 'permissions', 'library'],
+      showOnDesktopByDefault: false,
+    ),
+    ShellAppDef(
       id: 'allapps',
       title: 'All Apps',
       icon: Icons.apps_rounded,
@@ -395,6 +405,7 @@ class ShellAppRegistry {
     if (n.contains('meshcommand') || n.contains('mesh')) return 'meshcommand';
     if (n.contains('phantom') || n.contains('ghost')) return 'phantom';
     if (n.contains('browser')) return 'browser';
+    if (n.contains('app_manager') || n.contains('app_store') || n.contains('store')) return 'app_manager';
 
     final sorted = [...all]..sort((a, b) => b.id.length.compareTo(a.id.length));
     for (final app in sorted) {
@@ -501,8 +512,10 @@ class ShellAppRegistry {
       case 'adv_monitor':
         return const AdvancedMonitorScreen();
       case 'installer':
-      case 'app_store':
         return const AppInstallerScreen();
+      case 'app_store':
+      case 'app_manager':
+        return const AppManagerScreen();
       case 'storage':
         return const StorageAnalyzerScreen();
       case 'speedtest':

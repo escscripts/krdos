@@ -10,8 +10,46 @@ import '../../theme/grid_painter.dart';
 import '../../widgets/status_bar.dart';
 
 // ---------------------------------------------------------------------------
-// Data model
+// Data models
 // ---------------------------------------------------------------------------
+
+class DriveEntry {
+  final String name;
+  final String device;
+  final String label;
+  final String size;
+  final String type;
+  final String mountpoint;
+  final bool removable;
+  final String vendor;
+  final String model;
+
+  const DriveEntry({
+    required this.name,
+    required this.device,
+    required this.label,
+    required this.size,
+    required this.type,
+    required this.mountpoint,
+    required this.removable,
+    required this.vendor,
+    required this.model,
+  });
+
+  bool get isMounted => mountpoint.isNotEmpty && mountpoint != '[SWAP]';
+
+  factory DriveEntry.fromMap(Map<String, dynamic> m) => DriveEntry(
+    name:       (m['name']       as String?) ?? '',
+    device:     (m['device']     as String?) ?? '',
+    label:      (m['label']      as String?) ?? '',
+    size:       (m['size']       as String?) ?? '',
+    type:       (m['type']       as String?) ?? '',
+    mountpoint: (m['mountpoint'] as String?) ?? '',
+    removable:  (m['removable']  as bool?)   ?? false,
+    vendor:     (m['vendor']     as String?) ?? '',
+    model:      (m['model']      as String?) ?? '',
+  );
+}
 
 class FsEntry {
   final String name;
@@ -79,6 +117,10 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
   String? _loadError;
   List<FsEntry> _entries = [];
 
+  // Drives
+  List<DriveEntry> _drives = [];
+  Timer? _drivesTimer;
+
   // History
   final List<String> _history = [];
   int _historyIndex = -1;
@@ -115,11 +157,14 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
     _addressCtrl.text = _cwd;
     _addToHistory(_cwd);
     _loadDir(_cwd);
+    _loadDrives();
+    _drivesTimer = Timer.periodic(const Duration(seconds: 5), (_) => _loadDrives());
     WidgetsBinding.instance.addPostFrameCallback((_) => _kbFocus.requestFocus());
   }
 
   @override
   void dispose() {
+    _drivesTimer?.cancel();
     _searchCtrl.dispose();
     _addressCtrl.dispose();
     _renameCtrl.dispose();
@@ -189,6 +234,41 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
     } catch (e) {
       setState(() { _loading = false; _loadError = e.toString(); });
     }
+  }
+
+  Future<void> _loadDrives() async {
+    final raw = await SystemBridge.drivesList();
+    if (!mounted) return;
+    final drives = raw.map(DriveEntry.fromMap).toList();
+    setState(() => _drives = drives);
+  }
+
+  Future<void> _mountAndNavigate(DriveEntry d) async {
+    if (d.isMounted) {
+      _navigateTo(d.mountpoint);
+      return;
+    }
+    // Try to mount, then reload drives to get the mountpoint
+    final mp = await SystemBridge.usbMount(d.device);
+    await _loadDrives();
+    // Find updated entry
+    if (!mounted) return;
+    final updated = _drives.firstWhere((x) => x.device == d.device,
+        orElse: () => d);
+    if (updated.isMounted) {
+      _navigateTo(updated.mountpoint);
+    } else if (mp.isNotEmpty && mp != '{}') {
+      // udisksctl returns "Mounted /dev/sdb1 at /media/root/USB_DRIVE."
+      final match = RegExp(r'at (.+?)\.?$').firstMatch(mp);
+      if (match != null) _navigateTo(match.group(1)!.trim());
+    }
+  }
+
+  Future<void> _ejectDrive(DriveEntry d) async {
+    if (d.isMounted) {
+      await SystemBridge.usbUnmount(d.device);
+    }
+    await _loadDrives();
   }
 
   void _sortEntries(List<FsEntry> list) {
@@ -549,40 +629,110 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
   // ---------------------------------------------------------------------------
 
   Widget _buildSidebar() {
-    final items = [
-      {'section': 'SYSTEM', 'label': 'Root',      'path': '/',         'icon': Icons.computer},
-      {'section': 'SYSTEM', 'label': 'Home',      'path': '/root',     'icon': Icons.home_rounded},
-      {'section': 'SYSTEM', 'label': 'etc',       'path': '/etc',      'icon': Icons.settings_rounded},
-      {'section': 'SYSTEM', 'label': 'var',       'path': '/var',      'icon': Icons.storage_rounded},
-      {'section': 'SYSTEM', 'label': 'tmp',       'path': '/tmp',      'icon': Icons.delete_sweep_rounded},
-      {'section': 'SYSTEM', 'label': 'usr',       'path': '/usr',      'icon': Icons.folder_rounded},
-      {'section': 'MEDIA',  'label': 'Media',     'path': '/media',    'icon': Icons.usb_rounded},
-      {'section': 'MEDIA',  'label': 'mnt',       'path': '/mnt',      'icon': Icons.disc_full_rounded},
-      {'section': 'OPT',    'label': 'KrdOS',     'path': '/opt/krdos','icon': Icons.apps_rounded},
-    ];
-
-    final sections = <String>[];
-    for (final item in items) {
-      final sec = item['section'] as String;
-      if (!sections.contains(sec)) sections.add(sec);
-    }
+    // Drives: show partitions (type=part) that are removable OR are mounted
+    // somewhere other than system paths. Also always show disks with no children.
+    final systemMounts = {'/boot', '/boot/efi', '/home', '/tmp', '/', '[SWAP]'};
+    final removableDrives = _drives.where((d) =>
+        d.removable && d.type == 'part').toList();
+    final nonRemovablePartitions = _drives.where((d) =>
+        !d.removable && d.type == 'part' &&
+        d.isMounted &&
+        !systemMounts.any((sm) => d.mountpoint == sm)).toList();
 
     return Container(
       color: AppTheme.surface,
       child: ListView(
         padding: const EdgeInsets.symmetric(vertical: 8),
         children: [
-          for (final sec in sections) ...[
+          // ── PLACES ──────────────────────────────────────────────────────
+          _sidebarSection('PLACES'),
+          _sidebarItem('Home',   '/root',      Icons.home_rounded),
+          _sidebarItem('Root',   '/',          Icons.computer),
+          _sidebarItem('etc',    '/etc',       Icons.settings_rounded),
+          _sidebarItem('var',    '/var',       Icons.storage_rounded),
+          _sidebarItem('tmp',    '/tmp',       Icons.delete_sweep_rounded),
+          _sidebarItem('usr',    '/usr',       Icons.folder_rounded),
+          _sidebarItem('KrdOS',  '/opt/krdos', Icons.apps_rounded),
+
+          // ── DRIVES ──────────────────────────────────────────────────────
+          _sidebarSection('DRIVES'),
+          if (_drives.isEmpty)
             Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-              child: Text(sec, style: TextStyle(
-                  color: AppTheme.textSecondary, fontSize: 9, letterSpacing: 2)),
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+              child: Text('No drives detected',
+                  style: TextStyle(color: AppTheme.border, fontSize: 10)),
             ),
-            for (final item in items.where((i) => i['section'] == sec))
-              _sidebarItem(item['label'] as String, item['path'] as String,
-                  item['icon'] as IconData),
-          ],
+          // Internal mounted partitions (not system paths)
+          for (final d in nonRemovablePartitions)
+            _driveItem(d),
+          // Removable / USB drives
+          for (final d in removableDrives)
+            _driveItem(d),
+
+          // ── NETWORK ──────────────────────────────────────────────────────
+          _sidebarSection('NETWORK'),
+          _sidebarItem('media',  '/media',     Icons.usb_rounded),
+          _sidebarItem('mnt',    '/mnt',       Icons.disc_full_rounded),
         ],
+      ),
+    );
+  }
+
+  Widget _sidebarSection(String label) => Padding(
+    padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+    child: Text(label, style: TextStyle(
+        color: AppTheme.textSecondary, fontSize: 9, letterSpacing: 2)),
+  );
+
+  Widget _driveItem(DriveEntry d) {
+    final isActive = _cwd == d.mountpoint && d.isMounted;
+    final icon = d.removable
+        ? Icons.usb_rounded
+        : Icons.storage_rounded;
+    final label = d.label.isEmpty ? d.name : d.label;
+    final subtitle = d.isMounted ? d.mountpoint : '${d.size} — tap to mount';
+
+    return GestureDetector(
+      onTap: () => _mountAndNavigate(d),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 100),
+        color: isActive ? AppTheme.accentDim : Colors.transparent,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: Row(
+          children: [
+            Icon(icon,
+                color: d.isMounted
+                    ? (isActive ? AppTheme.accent : AppTheme.success)
+                    : AppTheme.border,
+                size: 14),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(label,
+                      style: TextStyle(
+                          color: isActive ? AppTheme.accent : AppTheme.textSecondary,
+                          fontSize: 12),
+                      overflow: TextOverflow.ellipsis),
+                  Text(subtitle,
+                      style: TextStyle(color: AppTheme.border, fontSize: 9),
+                      overflow: TextOverflow.ellipsis),
+                ],
+              ),
+            ),
+            if (d.removable)
+              GestureDetector(
+                onTap: () => _ejectDrive(d),
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: Icon(Icons.eject,
+                      color: AppTheme.textSecondary, size: 14),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
